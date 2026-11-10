@@ -1,0 +1,96 @@
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDatasource
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  datasource:
+    name: Prometheus
+    type: prometheus
+    uid: prometheus
+    url: http://prometheus-prometheus.monitoring:9090/
+    access: proxy
+    isDefault: true
+    jsonData:
+      httpMethod: POST
+      timeInterval: 30s
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDatasource
+metadata:
+  name: alertmanager
+  namespace: monitoring
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  datasource:
+    name: Alertmanager
+    type: alertmanager
+    uid: alertmanager
+    url: http://prometheus-alertmanager.monitoring:9093/
+    access: proxy
+    jsonData:
+      handleGrafanaManagedAlerts: false
+      implementation: prometheus
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDatasource
+metadata:
+  name: loki
+  namespace: monitoring
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  datasource:
+    name: Loki
+    type: loki
+    uid: dfi90c2a1osn4c
+    url: http://loki-gateway.logging.svc.cluster.local
+    access: proxy
+    jsonData:
+      maxLines: 1000
+      timeout: 60
+      httpHeaderName1: X-Scope-OrgID
+      derivedFields: []
+    secureJsonData:
+      httpHeaderValue1: fake
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDatasource
+metadata:
+  name: tempo
+  namespace: monitoring
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  datasource:
+    name: Tempo
+    type: tempo
+    uid: afia1p4xshn9cf
+    url: http://tempo3-query-frontend.logging.svc.cluster.local:3200
+    access: proxy
+    jsonData:
+      nodeGraph:
+        enabled: true
+      search:
+        hide: false
+      tracesToLogsV2:
+        datasourceUid: dfi90c2a1osn4c
+        spanStartTimeShift: -1h
+        spanEndTimeShift: 1h
+        filterByTraceID: true
+        filterBySpanID: false
+      tracesToMetrics:
+        datasourceUid: prometheus
+        spanStartTimeShift: -1h
+        spanEndTimeShift: 1h
+      serviceMap:
+        datasourceUid: prometheus
+      lokiSearch:
+        datasourceUid: dfi90c2a1osn4c

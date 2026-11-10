@@ -1,0 +1,140 @@
+# Prometheus Adapter - FULL values (source of truth)
+#
+# Full chart defaults are materialized here because Helm map-merges probes:
+# a partial override leaves the default httpGet in place, which fails TLS
+# hostname verification from the pod IP. The probes below are tcpSocket only.
+#
+# External metric: compassio_next_llm_wait_p95 (seconds), queried from
+# compassio_next_llm_wait_seconds_bucket. Returns 0 when there are no waits.
+affinity: {}
+topologySpreadConstraints: []
+nameOverride: ''
+fullnameOverride: ''
+image:
+  repository: registry.k8s.io/prometheus-adapter/prometheus-adapter
+  tag: ''
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+logLevel: 4
+metricsRelistInterval: 1m
+listenPort: 6443
+nodeSelector:
+  kubernetes.io/hostname: worker02
+priorityClassName: ''
+namespaceOverride: ''
+customAnnotations: {}
+customLabels: {}
+prometheus:
+  url: http://prometheus-prometheus.monitoring.svc
+  port: 9090
+  path: ''
+replicas: 1
+podSecurityContext:
+  fsGroup: 10001
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 10001
+  seccompProfile:
+    type: RuntimeDefault
+rbac:
+  create: true
+  useAuthReaderClusterRole: false
+  externalMetrics:
+    resources:
+    - '*'
+  customMetrics:
+    resources:
+    - '*'
+automountServiceAccountToken: true
+serviceAccount:
+  create: true
+  name: null
+  annotations: {}
+  automountServiceAccountToken: true
+dnsConfig: {}
+resources:
+  requests:
+    cpu: 50m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+livenessProbe:
+  tcpSocket:
+    port: https
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+readinessProbe:
+  tcpSocket:
+    port: https
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+startupProbe: {}
+rules:
+  default: false
+  custom: []
+  existing: null
+  external:
+  - seriesQuery: compassio_http_requests_total{namespace="compassio"}
+    resources:
+      overrides:
+        namespace:
+          resource: namespace
+    name:
+      as: compassio_next_llm_wait_p95
+    metricsQuery: "histogram_quantile(0.95,\n  sum by (le) (rate(compassio_next_llm_wait_seconds_bucket{namespace=\"\
+      compassio\"}[5m]))\n)\nand\nsum(increase(compassio_next_llm_wait_seconds_count{namespace=\"\
+      compassio\"}[5m])) >= 5\nor vector(0)\n"
+service:
+  annotations: {}
+  port: 443
+  type: ClusterIP
+  ipDualStack:
+    enabled: false
+    ipFamilies:
+    - IPv6
+    - IPv4
+    ipFamilyPolicy: PreferDualStack
+tls:
+  enable: false
+  ca: '# Public CA file that signed the APIService'
+  key: '# Private key of the APIService'
+  certificate: '# Public key of the APIService'
+env: []
+extraArguments: []
+extraContainers: []
+extraVolumes: []
+extraVolumeMounts: []
+tolerations: []
+podLabels: {}
+podAnnotations: {}
+deploymentAnnotations: {}
+hostNetwork:
+  enabled: false
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 25%
+    maxSurge: 25%
+podDisruptionBudget:
+  enabled: false
+  minAvailable: null
+  maxUnavailable: 1
+  unhealthyPodEvictionPolicy: null
+certManager:
+  enabled: false
+  caCertDuration: 43800h0m0s
+  certDuration: 8760h0m0s
+  caCertRevisionHistoryLimit: null
+  certRevisionHistoryLimit: null
+extraManifests: []
+revisionHistoryLimit: 10

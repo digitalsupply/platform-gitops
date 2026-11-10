@@ -1,0 +1,49 @@
+# Ceph-CSI Operator Driver values (chart ceph-csi-drivers 1.1.0)
+#
+# The operator itself runs in ceph-csi-operator-system and watches all
+# namespaces. The Driver/CephConnection/ClientProfile and the driver RBAC are
+# created in ceph-csi-rbd, where the existing secret and StorageClass live.
+#
+# The ClientProfile name MUST match the StorageClass clusterID. The current
+# StorageClass uses the Ceph fsid, so the ClientProfile keeps that exact name.
+
+cephConnections:
+  - name: ceph-connection
+    monitors:
+      - 10.0.0.31:6789
+      - 10.0.0.41:6789
+      - 10.0.0.51:6789
+
+clientProfiles:
+  - name: 594e535e-d82c-11f0-afa7-bc24112b746f
+    cephConnection:
+      name: ceph-connection
+    rbd:
+      cephCsiSecrets:
+        controllerPublishSecret:
+          name: csi-rbd-secret
+          namespace: ceph-csi-rbd
+        nodePublishSecret:
+          name: csi-rbd-secret
+          namespace: ceph-csi-rbd
+
+drivers:
+  rbd:
+    enabled: true
+    name: rbd.csi.ceph.com
+    # The operator defaults are older; pin the images validated with the Helm
+    # 3.18.2 chart. plugin uses the rocky9 build for x86-64-v2 CPUs.
+    imageSet:
+      name: rbd-csi-images
+    controllerPlugin:
+      replicas: 1
+  cephfs:
+    enabled: false
+  nvmeof:
+    enabled: false
+  nfs:
+    enabled: false
+
+# The StorageClass is managed by the platform-ceph-csi Application.
+operatorConfig:
+  create: false

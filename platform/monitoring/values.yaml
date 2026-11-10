@@ -1,0 +1,168 @@
+# kube-prometheus-stack 83.7.0 Helm values
+#
+# 重要：
+#   1. monitoring 命名空间的 kube-prometheus-stack 是 Helm release，不由 ArgoCD 管理；
+#      ArgoCD 不会自动回滚本文件中的存储配置。
+#   2. 本文件是存储、保留策略、Alertmanager 路由的 source of truth。
+#   3. 升级时必须带 --reuse-values，以保留未写入 Git 的 Grafana adminPassword 等现有值。
+#
+# 应用方式：
+#   helm -n monitoring upgrade prometheus prometheus-community/kube-prometheus-stack \
+#     --version 83.7.0 \
+#     -f platform/monitoring/values.yaml \
+#     --reuse-values
+#
+# 2026-11-09：Prometheus / Alertmanager / Grafana 数据盘已从 NFS 迁移到 Ceph RBD
+# （storageClass: ceph-rbd-sc）。旧 NFS PVC 保留用于回滚，见 README。
+
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    replicas: 1
+    # 只合并带 GitOps 白名单标签的 AlertmanagerConfig
+    alertmanagerConfigSelector:
+      matchLabels:
+        platform.gitops/managed: "true"
+    storage:
+      volumeClaimTemplate:
+        metadata:
+          # 最终 PVC 名称：
+          # alertmanager-db-ceph-alertmanager-prometheus-alertmanager-0
+          name: alertmanager-db-ceph
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 20Gi
+          storageClassName: ceph-rbd-sc
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by:
+        - alertname
+        - namespace
+        - severity
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: n8n-webhook
+      routes:
+        - matchers:
+            - severity =~ "critical|warning"
+          receiver: n8n-webhook
+          continue: true
+        - matchers:
+            - severity =~ "critical|warning"
+          receiver: wecom
+          # 继续匹配后续路由（团队 AlertmanagerConfig 追加在基础路由之后）
+          continue: true
+    receivers:
+      - name: wecom
+        webhook_configs:
+          - url: http://wecom-adapter.monitoring.svc:8080/
+            send_resolved: true
+            max_alerts: 10
+      - name: n8n-webhook
+        webhook_configs:
+          - url: https://example.invalid/n8n-webhook
+            send_resolved: true
+
+# 给 chart 自带的所有 PrometheusRule 打 GitOps 白名单标签。
+# 后续 Prometheus ruleSelector 只接受带此标签的规则。
+defaultRules:
+  labels:
+    platform.gitops/managed: "true"
+
+fullnameOverride: prometheus
+
+grafana:
+  enabled: true
+  # admin 凭据由 SealedSecret prometheus-grafana-admin 管理
+  # （见 stack/sealedsecret-grafana-admin.yaml），不再依赖 Helm release 的 adminPassword。
+  admin:
+    existingSecret: prometheus-grafana-admin
+  # RWO PVC 跨节点滚动更新会死锁：新 Pod 等旧 Pod 释放卷，旧 Pod 等新 Pod ready。
+  deploymentStrategy:
+    type: Recreate
+  env:
+    GF_SERVER_DOMAIN: grafana.k8s.local
+    GF_SERVER_ROOT_URL: https://grafana.k8s.local/
+  persistence:
+    enabled: true
+    # 迁移前手工创建并完成数据拷贝的 Ceph PVC
+    existingClaim: prometheus-grafana-ceph
+    size: 10Gi
+    storageClassName: ceph-rbd-sc
+  resources:
+    limits:
+      cpu: 1
+      memory: 1Gi
+    requests:
+      cpu: 200m
+      memory: 512Mi
+  sidecar:
+    dashboards:
+      enabled: false
+    datasources:
+      enabled: false
+
+kubeControllerManager:
+  enabled: true
+kubeEtcd:
+  enabled: true
+kubeProxy:
+  enabled: true
+kubeScheduler:
+  enabled: true
+kubeStateMetrics:
+  enabled: true
+nodeExporter:
+  enabled: true
+
+prometheus:
+  prometheusSpec:
+    enableAdminAPI: false
+    # 只发现带 GitOps 白名单标签的 PrometheusRule；
+    # chart 自带规则由 defaultRules.labels 打标，自建/团队规则由各自 Kustomize patch 打标。
+    ruleSelector:
+      matchLabels:
+        release: prometheus
+        platform.gitops/managed: "true"
+    evaluationInterval: 30s
+    replicas: 1
+    resources:
+      limits:
+        cpu: 2
+        memory: 4Gi
+      requests:
+        cpu: 500m
+        memory: 2Gi
+    retention: 15d
+    retentionSize: 25GiB
+    scrapeInterval: 30s
+    storageSpec:
+      volumeClaimTemplate:
+        metadata:
+          # 最终 PVC 名称：
+          # prometheus-db-ceph-prometheus-prometheus-prometheus-0
+          name: prometheus-db-ceph
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 100Gi
+          storageClassName: ceph-rbd-sc
+    # RBD 上已有 19G+ 数据。默认 fsGroup=2000 会让 kubelet 在每次启动时递归 chown，
+    # 导致 Pod 长时间卡在 Init:0/1，甚至把节点 I/O 拖死。
+    # OnRootMismatch：仅当挂载根目录的 group 不是 2000 时才 chown。
+    securityContext:
+      runAsGroup: 2000
+      runAsNonRoot: true
+      runAsUser: 1000
+      fsGroup: 2000
+      fsGroupChangePolicy: OnRootMismatch
+      seccompProfile:
+        type: RuntimeDefault

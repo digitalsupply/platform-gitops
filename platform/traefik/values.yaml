@@ -1,0 +1,85 @@
+# Traefik Helm values
+#
+# Managed by ArgoCD Application: platform-traefik
+# 初始值来自集群中已存在的 Helm release `traefik` (rev 5, chart 37.4.0)，
+# 后续所有变更都应通过 Git 提交完成。
+
+additionalArguments:
+  - --api.dashboard=true
+
+# Traefik 3.7 安全建议：对未单独配置的 entryPoint，删除可被用于
+# header 伪装的非标准别名头（如 X_Auth_User -> X-Auth-User）。
+global:
+  aliasHeadersStrategy: delete
+
+# 保持现有（legacy）路由/服务命名，避免升级后改名影响已有 Ingress 引用。
+providers:
+  kubernetesCRD:
+    safeNaming: false
+
+# 单副本且节点内存紧张：滚动更新时先停旧 Pod 再起新 Pod，
+# 避免升级期间临时出现两个 Traefik Pod。
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+    maxSurge: 0
+
+ingressRoute:
+  dashboard:
+    enabled: true
+    entryPoints:
+      - websecure
+    matchRule: Host(`traefik.example.com`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))
+    middlewares:
+      - name: traefik-dashboard-auth
+
+ports:
+  traefik:
+    exposedPort: 9000
+    port: 9000
+
+# 单副本。滚动更新保持 maxUnavailable: 0（先起新 Pod 再停旧 Pod），
+# 不额外增加常驻副本，避免占用节点内存。
+deployment:
+  replicas: 1
+
+# 原先通过手工 patch Deployment 注入的 OTLP tracing 参数，纳入 values 管理。
+tracing:
+  serviceName: traefik
+  sampleRate: 1.0
+  otlp:
+    enabled: true
+    grpc:
+      enabled: true
+      endpoint: otel-collector.opentelemetry.svc.cluster.local:4317
+      insecure: true
+
+# dashboard basic-auth 依赖的 Middleware 与 Secret 原先由 kubectl 手工创建，
+# 这里一并纳入 GitOps。Secret 以 SealedSecret 形式保存，由 kube-system 中的
+# sealed-secrets controller 解密。
+extraObjects:
+  - apiVersion: traefik.io/v1alpha1
+    kind: Middleware
+    metadata:
+      name: traefik-dashboard-auth
+      namespace: traefik
+    spec:
+      basicAuth:
+        secret: traefik-dashboard-auth-secret
+  - apiVersion: bitnami.com/v1alpha1
+    kind: SealedSecret
+    metadata:
+      name: traefik-dashboard-auth-secret
+      namespace: traefik
+    spec:
+      encryptedData:
+        users: AgBS1wg5mBBpUbX2oEMPVmMNUkr+rzwB6uPZcmkD9T2b4aigUtaQkx8Rx1c0zDqqsWwI95kVwNLdkUuWzf+ROGeZyzmATR6ltlqF+2imSDPOr2uUXTOcDkyTs1gR/9fcdDxBgFwT92f73mvhIws4zRknNOa7WLp02M41no54+jZM+keBzf7oqkX/3fyYpYQRRwO/qpty7BH6sVWUZ9mz70WOuEKWt3GsWS0IkEpd/iHRUjB1CBJmCmWecMvWWrnVzMCqCujcGEtT7mRGYxCbdeoX+DBnbTMKKaPdDpwIMSiVpwXGiePaIhKF05svin2mKFy35hr5eqT/TekNhPM1R2sJt8uhj/Wxz6iFsTSTWiijsKMZlLKIX0+I6gvFbglmEDqJhoQ6Bnl08IFjJRcTxdX28D6v7NU5GM/7UJvGVV1jkKGXsSimkBQrHsIYYGDwIFBxa3oaUowfww+1TdI/xYpMvHP6WTjUusvrXTKy9YI1iPsk939/IopjiFcA4OTZjqLxMqEoTb3iS9KvIpBDDaKW5PW3evTxg09jRaVG+G9yJk4i3jwmCbfK92LmF4QLUFJuqJzwpSygryqqLYPnqnvyNj4cxkOfeNLjAzN1Ky0tSNHmijPg3eqD/Kwzjqlt9+bDp0LJRHoo9Cz/dPj7tUMI06BvK9YD+yg32xVG4Q8YKkIGJ0C97SVu6bdc8elASbTVHPEfZ+1sxtkHROpSAA7HSUUcsu+iCLr9fhVSxIsnAF3ZFYI8TT1GasIK
+      template:
+        metadata:
+          name: traefik-dashboard-auth-secret
+          namespace: traefik
+          annotations:
+            # 允许 sealed-secrets controller 接管已存在的同名 Secret
+            sealedsecrets.bitnami.com/managed: "true"
+        type: Opaque

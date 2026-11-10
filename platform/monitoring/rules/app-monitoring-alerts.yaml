@@ -1,0 +1,103 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    release: prometheus
+  name: app-monitoring-alerts
+  namespace: monitoring
+spec:
+  groups:
+  - name: cert-manager.rules
+    rules:
+    - alert: CertManagerCertificateExpiringSoon
+      annotations:
+        summary: '证书即将过期: {{ $labels.namespace }}/{{ $labels.name }} (剩余 {{ $value | humanizeDuration }})'
+      expr: 'certmanager_certificate_expiration_timestamp_seconds - time() < 14 * 24 * 3600
+
+        '
+      for: 1h
+      labels:
+        severity: warning
+    - alert: CertManagerCertificateExpired
+      annotations:
+        summary: '证书已过期: {{ $labels.namespace }}/{{ $labels.name }}'
+      expr: 'certmanager_certificate_expiration_timestamp_seconds - time() < 0
+
+        '
+      for: 5m
+      labels:
+        severity: critical
+    - alert: CertManagerNotReady
+      annotations:
+        summary: 'cert-manager 证书非 Ready: {{ $labels.namespace }}/{{ $labels.name }}'
+      expr: 'certmanager_certificate_ready_status{condition="True"} == 0
+
+        '
+      for: 15m
+      labels:
+        severity: warning
+  - name: tekton.rules
+    rules:
+    - alert: TektonPipelineRunFailed
+      annotations:
+        summary: 'PipelineRun 失败: {{ $labels.namespace }}/{{ $labels.pipelinerun }}'
+      expr: 'tekton_pipelines_controller_pipelinerun_count{status="failed"} - tekton_pipelines_controller_pipelinerun_count{status="failed"}
+        offset 5m > 0
+
+        '
+      for: 5m
+      labels:
+        severity: warning
+    - alert: TektonTaskRunFailed
+      annotations:
+        summary: 'TaskRun 失败: {{ $labels.namespace }}/{{ $labels.taskrun }}'
+      expr: 'tekton_pipelines_controller_taskrun_count{status="failed"} - tekton_pipelines_controller_taskrun_count{status="failed"}
+        offset 5m > 0
+
+        '
+      for: 5m
+      labels:
+        severity: warning
+  - name: traefik.rules
+    rules:
+    - alert: TraefikHigh5xxRate
+      annotations:
+        summary: 'traefik 5xx 率过高: {{ $labels.service }}'
+      expr: "sum by (service) (\n  sum by (service) (rate(traefik_service_requests_total{code=~\"5..\"}[5m]))\n  /\n  (sum\
+        \ by (service) (rate(traefik_service_requests_total[5m])) > 0)\n) > 0.05\n"
+      for: 5m
+      labels:
+        severity: warning
+  - name: kafka.rules
+    rules:
+    - alert: KafkaClusterOperatorDown
+      annotations:
+        summary: strimzi cluster operator 不可用
+      expr: 'up{job="kafka/strimzi-cluster-operator"} == 0
+
+        '
+      for: 5m
+      labels:
+        severity: critical
+  - name: storage.rules
+    rules:
+    - alert: CephCSIOperationErrors
+      annotations:
+        summary: 'ceph-csi 操作失败: {{ $labels.driver_name }} ({{ $labels.grpc_status_code }})'
+      expr: 'increase(csi_sidecar_operations_seconds_count{driver_name="rbd.csi.ceph.com"}[5m]) > 5
+
+        '
+      for: 5m
+      labels:
+        severity: warning
+  - name: cnpg.rules
+    rules:
+    - alert: CNPGControllerManagerDown
+      annotations:
+        summary: cnpg controller-manager 不可用
+      expr: 'up{job="cnpg-system/cnpg-controller-manager"} == 0
+
+        '
+      for: 5m
+      labels:
+        severity: critical

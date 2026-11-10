@@ -1,0 +1,148 @@
+apiVersion: v1
+data:
+  adapter.py: "#!/usr/bin/env python3\n# -*- coding: utf-8 -*-\n\"\"\"Alertmanager -> 企业微信群机器人 适配器\n\n为什么需要它\n------------\n\
+    Alertmanager v0.32.0 的原生 `wechat_configs` 只能调用「企业微信自建应用」接口：\n`notify/wechat/wechat.go` 里 api_url 被硬编码拼接成 `gettoken` 与\
+    \ `message/send`。\n把 api_url 指向群机器人 webhook 会得到 `.../webhook/send?key=XXXgettoken` -> 404。\n而自建应用路线要求可信域名 / 接收消息服务器URL\
+    \ / 可信IP 三重门槛。\n\n本服务接住 Alertmanager 的 webhook 负载，转成群机器人要求的\n`{\"msgtype\":\"markdown\",\"markdown\":{\"content\":...}}`\
+    \ 后转发，\n从而用「群机器人」这条零门槛通道完成告警投递。\n\n约束与取舍\n----------\n* 纯标准库，无第三方依赖 -> 镜像只需 python:3.12-alpine\n* 群机器人限流 20 条/分钟 -> 发送端串行\
+    \ + 最小间隔 WECOM_MIN_INTERVAL(默认 3s)\n* 企业微信 HTTP 200 但 errcode != 0 时，返回 502 给 Alertmanager，\n  使 alertmanager_notifications_failed_total\
+    \ 能反映真实投递结果（而不是假成功）\n* markdown content 上限 4096 字节（企业微信硬限制），按 UTF-8 rune 边界截断\n* webhook key 来自 Secret 注入，不写死在代码/ConfigMap\
+    \ 里\n\"\"\"\n\nimport json\nimport os\nimport sys\nimport threading\nimport time\nimport urllib.error\nimport urllib.request\n\
+    from datetime import datetime, timezone\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\n\nLISTEN_ADDR\
+    \ = os.environ.get(\"LISTEN_ADDR\", \"0.0.0.0:8080\")\nWECOM_WEBHOOK_URL = os.environ.get(\"WECOM_WEBHOOK_URL\", \"\"\
+    ).strip()\nMIN_INTERVAL = float(os.environ.get(\"WECOM_MIN_INTERVAL\", \"3\"))\nHTTP_TIMEOUT = float(os.environ.get(\"\
+    WECOM_TIMEOUT\", \"8\"))\nMAX_BYTES = int(os.environ.get(\"MAX_CONTENT_BYTES\", \"4096\"))\nMAX_ALERTS = int(os.environ.get(\"\
+    MAX_ALERTS\", \"10\"))\n\n# 严重级别 -> (emoji, 企业微信 markdown 颜色)\n# 企业微信 markdown 仅支持 info / comment / warning 三种字体颜色\nSEVERITY_STYLE\
+    \ = {\n    \"critical\": (\"\\U0001f534\", \"warning\"),\n    \"warning\": (\"\\U0001f7e0\", \"warning\"),\n    \"info\"\
+    : (\"\\U0001f535\", \"info\"),\n    \"none\": (\"\\u26aa\", \"info\"),\n}\n\n# 用于在分组内挑最严重的一条来决定标题颜色\nSEVERITY_RANK = {\"\
+    critical\": 3, \"warning\": 2, \"info\": 1, \"none\": 0}\n\n# 群机器人限流相关错误码 -> 提示\nERRCODE_HINT = {\n    45009: \"触发群机器人频率限制（20\
+    \ 条/分钟）\",\n    93000: \"webhook key 无效或机器人已被移除，请重新获取\",\n    40058: \"webhook key 非法\",\n    40001: \"access_token 无效（本通道不该出现，说明配置串了）\"\
+    ,\n}\n\n_send_lock = threading.Lock()\n_last_send_at = [0.0]\n\n_stats_lock = threading.Lock()\n_stats = {\n    \"received\"\
+    : 0,\n    \"sent\": 0,\n    \"failed\": 0,\n    \"skipped_empty\": 0,\n    \"last_errcode\": None,\n    \"last_error\"\
+    : None,\n    \"last_sent_at\": None,\n}\n\n\ndef log(level, msg, **kw):\n    parts = [\"time=%s\" % datetime.now(timezone.utc).astimezone().strftime(\"\
+    %Y-%m-%dT%H:%M:%S%z\"),\n             \"level=%s\" % level, \"msg=%s\" % msg]\n    for k in kw:\n        parts.append(\"\
+    %s=%s\" % (k, kw[k]))\n    sys.stdout.write(\" \".join(parts) + \"\\n\")\n    sys.stdout.flush()\n\n\ndef bump(**kw):\n\
+    \    with _stats_lock:\n        for k, v in kw.items():\n            if k in _stats:\n                _stats[k] = v\n\n\
+    \ndef bump_stat(key, delta=1):\n    with _stats_lock:\n        _stats[key] = _stats.get(key, 0) + delta\n\n\ndef set_stat(**kw):\n\
+    \    with _stats_lock:\n        _stats.update(kw)\n\n\n# --------------------------------------------------------------------------\n\
+    # 文本处理\n# --------------------------------------------------------------------------\n\ndef humanize_duration(seconds):\n\
+    \    \"\"\"把秒数写成中文时长（不依赖 sprig / 外部库）。\"\"\"\n    seconds = int(max(0, seconds))\n    days, rem = divmod(seconds, 86400)\n\
+    \    hours, rem = divmod(rem, 3600)\n    minutes, secs = divmod(rem, 60)\n    if days:\n        return \"%d\\u5929%d\\\
+    u5c0f\\u65f6\" % (days, hours)\n    if hours:\n        return \"%d\\u5c0f\\u65f6%d\\u5206\" % (hours, minutes)\n    if\
+    \ minutes:\n        return \"%d\\u5206%d\\u79d2\" % (minutes, secs)\n    return \"%d\\u79d2\" % secs\n\n\ndef parse_ts(value):\n\
+    \    \"\"\"解析 Alertmanager 的 RFC3339 时间戳，失败返回 None。\n\n    注意：Alertmanager 对仍 firing 的告警会发 endsAt=\"0001-01-01T00:00:00Z\"\
+    \n    这个零值哨兵，必须当成「没有结束时间」，否则会渲染出「恢复 01-01」这种垃圾。\n    \"\"\"\n    if not value or not isinstance(value, str):\n       \
+    \ return None\n    text = value.strip()\n    if text.endswith(\"Z\"):\n        text = text[:-1] + \"+00:00\"\n    try:\n\
+    \        dt = datetime.fromisoformat(text)\n    except ValueError:\n        return None\n    if dt.year < 1971:\n    \
+    \    return None\n    if dt.tzinfo is None:\n        dt = dt.replace(tzinfo=timezone.utc)\n    return dt\n\n\ndef fmt_ts(dt):\n\
+    \    if dt is None:\n        return \"\\u672a\\u77e5\"\n    return dt.astimezone().strftime(\"%m-%d %H:%M:%S\")\n\n\n\
+    def truncate_utf8(text, limit=None):\n    \"\"\"按 UTF-8 字节数截断，且不切碎多字节字符。\"\"\"\n    limit = limit or MAX_BYTES\n    raw\
+    \ = text.encode(\"utf-8\")\n    if len(raw) <= limit:\n        return text\n    tail = \"\\n> \\u2026\\u5185\\u5bb9\\\
+    u8fc7\\u957f\\u5df2\\u622a\\u65ad\\uff08%d/%d \\u5b57\\u8282\\uff09\" % (\n        len(raw), limit)\n    budget = max(0,\
+    \ limit - len(tail.encode(\"utf-8\")))\n    head = raw[:budget].decode(\"utf-8\", \"ignore\")\n    return head.rstrip()\
+    \ + tail\n\n\n# --------------------------------------------------------------------------\n# 消息渲染\n# --------------------------------------------------------------------------\n\
+    \ndef worst_severity(common_labels, alerts):\n    \"\"\"取分组内最高严重级别。\n\n    不用 commonLabels.severity 是因为它只在「所有告警共有」时才正确；\n\
+    \    一旦 group_by 不含 severity，一个含 critical 的分组会被整体标成橙色，\n    反而把最该看的那条降级了。\n    \"\"\"\n    best = str((common_labels or\
+    \ {}).get(\"severity\") or \"none\").lower()\n    for alert in alerts or []:\n        if not isinstance(alert, dict):\n\
+    \            continue\n        sev = str((alert.get(\"labels\") or {}).get(\"severity\") or \"\").lower()\n        if\
+    \ SEVERITY_RANK.get(sev, 0) > SEVERITY_RANK.get(best, 0):\n            best = sev\n    return best if best in SEVERITY_STYLE\
+    \ else \"none\"\n\n\ndef alert_title(alert, labels):\n    \"\"\"挑一个人类可读的对象标识。\"\"\"\n    for key in (\"pod\", \"node\"\
+    , \"instance\", \"container\", \"deployment\"):\n        val = labels.get(key)\n        if val:\n            return \"\
+    %s=%s\" % (key, val)\n    for key in (\"namespace\", \"job\"):\n        val = labels.get(key)\n        if val:\n     \
+    \       return val\n    return labels.get(\"alertname\", \"unknown\")\n\n\ndef render(payload):\n    \"\"\"Alertmanager\
+    \ webhook payload -> 群机器人 markdown content\"\"\"\n    if not isinstance(payload, dict):\n        # 兼容直接 POST 一个告警数组的测试工具\n\
+    \        payload = {\"status\": \"firing\", \"alerts\": payload if isinstance(payload, list) else []}\n\n    status =\
+    \ str(payload.get(\"status\") or \"firing\")\n    firing = status == \"firing\"\n    common_labels = payload.get(\"commonLabels\"\
+    ) or {}\n    common_annotations = payload.get(\"commonAnnotations\") or {}\n    alerts = payload.get(\"alerts\") or []\n\
+    \n    alertname = common_labels.get(\"alertname\") or \"Alerts\"\n    severity = worst_severity(common_labels, alerts)\n\
+    \    emoji, color = SEVERITY_STYLE[severity]\n    namespace = common_labels.get(\"namespace\")\n    resolved_color = \"\
+    info\" if not firing else color\n\n    if firing:\n        title = \"## %s \\u7c07\\u96c6\\u544a\\u8b66 \\u00b7 %s\" %\
+    \ (emoji, alertname)\n    else:\n        title = \"## \\u2705 \\u7c07\\u96c6\\u544a\\u8b66\\u5df2\\u6062\\u590d \\u00b7\
+    \ %s\" % alertname\n\n    lines = [title, \"\"]\n\n    facts = []\n    if namespace:\n        facts.append(\"**\\u547d\\\
+    u540d\\u7a7a\\u95f4** `%s`\" % namespace)\n    facts.append(\"**\\u4e25\\u91cd\\u7ea7\\u522b** `<font color=\\\"%s\\\"\
+    >%s</font>`\" % (resolved_color, severity.upper()))\n    facts.append(\"**\\u6570\\u91cf** %d\" % len(alerts))\n    lines.append(\"\
+    > \" + \" \\u00b7 \".join(facts))\n    lines.append(\"\")\n\n    summary = common_annotations.get(\"summary\")\n    if\
+    \ summary and not summary.strip():\n        summary = None\n    if summary:\n        lines.append(\"> %s\" % str(summary).replace(\"\
+    \\n\", \" \").strip())\n        lines.append(\"\")\n\n    now = datetime.now(timezone.utc)\n    for idx, alert in enumerate(alerts[:MAX_ALERTS]):\n\
+    \        if not isinstance(alert, dict):\n            continue\n        labels = alert.get(\"labels\") or {}\n       \
+    \ annotations = alert.get(\"annotations\") or {}\n        sev = str(labels.get(\"severity\") or severity).lower()\n  \
+    \      _, sev_color = SEVERITY_STYLE.get(sev, SEVERITY_STYLE[\"none\"])\n\n        state = \"firing\" if alert.get(\"\
+    status\") == \"firing\" else \"resolved\"\n        head = \"%d. `%s` \\u2014 <font color=\\\"%s\\\">%s</font>\" % (\n\
+    \            idx + 1, alert_title(alert, labels), sev_color, state.upper())\n        lines.append(head)\n\n        detail\
+    \ = annotations.get(\"summary\") or annotations.get(\"description\")\n        if detail:\n            for line in str(detail).splitlines():\n\
+    \                if line.strip():\n                    lines.append(\"   > %s\" % line.strip())\n        started = parse_ts(alert.get(\"\
+    startsAt\"))\n        ended = parse_ts(alert.get(\"endsAt\"))\n        if started:\n            end_ref = ended if ended\
+    \ and state == \"resolved\" else now\n            elapsed = (end_ref - started).total_seconds()\n            tail = \"\
+    \\u89e6\\u53d1 %s\" % fmt_ts(started)\n            if elapsed > 0:\n                tail += \" \\u00b7 \\u6301\\u7eed\
+    \ %s\" % humanize_duration(elapsed)\n            if state == \"resolved\" and ended:\n                tail += \" \\u00b7\
+    \ \\u6062\\u590d %s\" % fmt_ts(ended)\n            lines.append(\"   > %s\" % tail)\n        lines.append(\"\")\n\n  \
+    \  hidden = len(alerts) - MAX_ALERTS\n    if hidden > 0:\n        lines.append(\"> \\u53e6\\u6709 %d \\u6761\\u544a\\\
+    u8b66\\u672a\\u5c55\\u793a\" % hidden)\n        lines.append(\"\")\n\n    if summary is None and not alerts:\n       \
+    \ lines.append(\"> \\u65e0\\u9644\\u52a0\\u8be6\\u60c5\")\n        lines.append(\"\")\n\n    external = str(payload.get(\"\
+    externalURL\") or \"\").rstrip(\"/\")\n    lines.append(\"---\")\n    footer = \"Alertmanager \\u00b7 receiver `wecom`\
+    \ \\u00b7 group `%s`\" % payload.get(\"groupKey\", \"?\")\n    if external:\n        footer += \"\\n\\u67e5\\u770b\\u5168\\\
+    u90e8: %s/#/alerts\" % external\n    lines.append(\"<font color=\\\"comment\\\">%s</font>\" % footer)\n\n    return truncate_utf8(\"\
+    \\n\".join(lines))\n\n\n# --------------------------------------------------------------------------\n# 转发到群机器人\n# --------------------------------------------------------------------------\n\
+    \nclass WecomError(Exception):\n    def __init__(self, errcode, errmsg):\n        Exception.__init__(self, \"errcode=%s\
+    \ errmsg=%s\" % (errcode, errmsg))\n        self.errcode = errcode\n        self.errmsg = errmsg\n\n\ndef post_to_wecom(content):\n\
+    \    body = json.dumps({\"msgtype\": \"markdown\", \"markdown\": {\"content\": content}},\n                      ensure_ascii=False).encode(\"\
+    utf-8\")\n    req = urllib.request.Request(\n        WECOM_WEBHOOK_URL,\n        data=body,\n        headers={\"Content-Type\"\
+    : \"application/json; charset=utf-8\",\n                 \"User-Agent\": \"wecom-alert-adapter/1.0\"},\n        method=\"\
+    POST\",\n    )\n    try:\n        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:\n            raw = resp.read().decode(\"\
+    utf-8\", \"replace\")\n    except urllib.error.HTTPError as exc:\n        raise WecomError(\"http_%d\" % exc.code, exc.reason)\n\
+    \    except Exception as exc:  # network / DNS / TLS\n        raise WecomError(\"transport\", \"%s: %s\" % (type(exc).__name__,\
+    \ exc))\n\n    try:\n        parsed = json.loads(raw)\n    except ValueError:\n        raise WecomError(\"bad_response\"\
+    , raw[:200])\n    if not isinstance(parsed, dict):\n        raise WecomError(\"bad_response\", raw[:200])\n    if parsed.get(\"\
+    errcode\") != 0:\n        raise WecomError(parsed.get(\"errcode\"), parsed.get(\"errmsg\"))\n    return parsed\n\n\ndef\
+    \ deliver(content):\n    \"\"\"串行化 + 限流地投递一条消息。\"\"\"\n    with _send_lock:\n        wait = MIN_INTERVAL - (time.monotonic()\
+    \ - _last_send_at[0])\n        if wait > 0:\n            time.sleep(wait)\n        try:\n            return post_to_wecom(content)\n\
+    \        finally:\n            _last_send_at[0] = time.monotonic()\n\n\ndef webhook_ready():\n    return bool(WECOM_WEBHOOK_URL)\
+    \ and \"REPLACE_ME\" not in WECOM_WEBHOOK_URL\n\n\n# --------------------------------------------------------------------------\n\
+    # HTTP 层\n# --------------------------------------------------------------------------\n\nclass Handler(BaseHTTPRequestHandler):\n\
+    \    protocol_version = \"HTTP/1.1\"\n    server_version = \"wecom-alert-adapter/1.0\"\n\n    def _reply(self, code, obj):\n\
+    \        body = json.dumps(obj, ensure_ascii=False).encode(\"utf-8\")\n        self.send_response(code)\n        self.send_header(\"\
+    Content-Type\", \"application/json; charset=utf-8\")\n        self.send_header(\"Content-Length\", str(len(body)))\n \
+    \       self.end_headers()\n        try:\n            self.wfile.write(body)\n        except BrokenPipeError:\n      \
+    \      pass\n\n    def do_GET(self):\n        path = self.path.split(\"?\", 1)[0]\n        if path == \"/healthz\":\n\
+    \            # liveness: 进程还能服务就算活。webhook 没配好不算「不健康」——\n            # 重启解决不了；而且让 Pod 保持 Ready，才能把带说明的 503 返回给\n     \
+    \       # Alertmanager（否则 Service 无 endpoints，AM 只看到一个\n            # \"connection refused\"，排查时信息量少得多）。\n           \
+    \ self._reply(200, {\"ok\": True, \"webhook_configured\": webhook_ready()})\n        elif path in (\"/readyz\", \"/-/ready\"\
+    ):\n            # readiness 语义位，只给人看，不接探针：\n            # 一旦接上，key 没配好时 Pod 就永不 Ready，rollout 也会死等。\n            ready\
+    \ = webhook_ready()\n            self._reply(200 if ready else 503,\n                        {\"ok\": ready, \"webhook_configured\"\
+    : ready})\n        elif path in (\"/stats\", \"/-/stats\"):\n            with _stats_lock:\n                self._reply(200,\
+    \ dict(_stats))\n        else:\n            self._reply(404, {\"error\": \"not found\",\n                            \
+    \  \"paths\": [\"/alerts\", \"/healthz\", \"/readyz\", \"/stats\"]})\n\n    def do_POST(self):\n        path = self.path.split(\"\
+    ?\", 1)[0]\n        if path not in (\"/alerts\", \"/\"):\n            self._reply(404, {\"error\": \"not found\"})\n \
+    \           return\n        if not webhook_ready():\n            log(\"ERROR\", \"webhook not configured, rejecting\"\
+    ,\n                placeholder=\"REPLACE_ME\" in WECOM_WEBHOOK_URL,\n                configured=bool(WECOM_WEBHOOK_URL))\n\
+    \            self._reply(503, {\"error\": \"WECOM_WEBHOOK_URL not configured\"})\n            return\n\n        try:\n\
+    \            length = int(self.headers.get(\"Content-Length\") or 0)\n        except ValueError:\n            length =\
+    \ 0\n        raw = self.rfile.read(length) if length > 0 else b\"\"\n        try:\n            payload = json.loads(raw.decode(\"\
+    utf-8\"))\n        except (ValueError, UnicodeDecodeError) as exc:\n            log(\"ERROR\", \"bad request body\", err=str(exc))\n\
+    \            self._reply(400, {\"error\": \"invalid json: %s\" % exc})\n            return\n\n        bump_stat(\"received\"\
+    )\n        content = render(payload)\n        alertname = (payload.get(\"commonLabels\") or {}).get(\"alertname\") \\\n\
+    \            if isinstance(payload, dict) else None\n        state = payload.get(\"status\") if isinstance(payload, dict)\
+    \ else \"?\"\n\n        try:\n            deliver(content)\n        except WecomError as exc:\n            hint = ERRCODE_HINT.get(exc.errcode,\
+    \ \"\")\n            set_stat(last_errcode=str(exc.errcode), last_error=str(exc))\n            bump_stat(\"failed\")\n\
+    \            log(\"ERROR\", \"delivery failed\", alertname=alertname, state=state,\n                errcode=exc.errcode,\
+    \ errmsg=exc.errmsg, hint=hint)\n            self._reply(502, {\"delivered\": False,\n                              \"\
+    errcode\": exc.errcode,\n                              \"errmsg\": exc.errmsg,\n                              \"hint\"\
+    : hint})\n            return\n\n        set_stat(last_errcode=0, last_error=None,\n                 last_sent_at=datetime.now(timezone.utc).isoformat())\n\
+    \        bump_stat(\"sent\")\n        log(\"INFO\", \"delivered\", alertname=alertname, state=state,\n            bytes=len(content.encode(\"\
+    utf-8\")), alerts=len(payload.get(\"alerts\") or []))\n        self._reply(200, {\"delivered\": True, \"bytes\": len(content.encode(\"\
+    utf-8\"))})\n\n    def log_message(self, fmt, *args):\n        log(\"DEBUG\", \"http\", peer=self.address_string(), line=fmt\
+    \ % args)\n\n\ndef main():\n    host, _, port = LISTEN_ADDR.rpartition(\":\")\n    port = int(port or 8080)\n    log(\"\
+    INFO\", \"starting\", listen=LISTEN_ADDR,\n        webhook_configured=webhook_ready(),\n        min_interval=MIN_INTERVAL,\
+    \ max_alerts=MAX_ALERTS,\n        max_content_bytes=MAX_BYTES, python=sys.version.split()[0])\n    if not webhook_ready():\n\
+    \        log(\"WARN\", \"WECOM_WEBHOOK_URL 未配置或仍是占位符，\"\n                    \"/alerts 返回 503，/readyz 返回 503（/healthz\
+    \ 仍为 200，\"\n                    \"让 Pod 保持 Ready 以便把错误明确回给 Alertmanager）\")\n    server = ThreadingHTTPServer((host or\
+    \ \"0.0.0.0\", port), Handler)\n    server.daemon_threads = True\n    try:\n        server.serve_forever()\n    except\
+    \ KeyboardInterrupt:\n        log(\"INFO\", \"shutting down\")\n    finally:\n        server.server_close()\n\n\nif __name__\
+    \ == \"__main__\":\n    main()"
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/component: alerting-adapter
+    app.kubernetes.io/name: wecom-adapter
+  name: wecom-adapter-script
+  namespace: monitoring

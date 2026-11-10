@@ -1,0 +1,93 @@
+# 清洗后的 Cluster CR：只保留“用户意图”，不含 status / uid / managedFields /
+# Operator 回填的 enablePDB / probes / replicationSlots.synchronizeReplicas。
+# 这些回填字段由 ArgoCD Application 的 ignoreDifferences 处理。
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: pg16-ceph
+  namespace: cnpg-system
+spec:
+  instances: 2
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.15
+  primaryUpdateMethod: switchover
+  primaryUpdateStrategy: unsupervised
+
+  enableSuperuserAccess: false
+  superuserSecret:
+    name: pg-superuser-secret
+
+  storage:
+    size: 10Gi
+    storageClass: ceph-rbd-sc
+    resizeInUseVolumes: true
+  walStorage:
+    size: 5Gi
+    storageClass: ceph-rbd-sc
+    resizeInUseVolumes: true
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+  bootstrap:
+    initdb:
+      database: n8n
+      owner: n8nuser
+      encoding: UTF8
+      localeCType: C
+      localeCollate: C
+      secret:
+        name: pg-secret
+
+  backup:
+    target: prefer-standby
+
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      enabled: true
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: pg16-ceph-store
+        serverName: pg16-ceph
+
+  # 当前参数完整写进 Git，避免 Operator 默认值造成永久 diff。
+  # CNPG 升级后如默认值变化，再按需更新这里。
+  postgresql:
+    parameters:
+      archive_mode: "on"
+      archive_timeout: 5min
+      dynamic_shared_memory_type: posix
+      full_page_writes: "on"
+      log_destination: csvlog
+      log_directory: /controller/log
+      log_filename: postgres
+      log_rotation_age: "0"
+      log_rotation_size: "0"
+      log_truncate_on_rotation: "false"
+      logging_collector: "on"
+      max_parallel_workers: "32"
+      max_replication_slots: "32"
+      max_worker_processes: "32"
+      shared_memory_type: mmap
+      shared_preload_libraries: ""
+      ssl_max_protocol_version: TLSv1.3
+      ssl_min_protocol_version: TLSv1.3
+      wal_keep_size: 512MB
+      wal_level: logical
+      wal_log_hints: "on"
+      wal_receiver_timeout: 5s
+      wal_sender_timeout: 5s
+
+  affinity:
+    podAntiAffinityType: preferred
+
+  monitoring:
+    enablePodMonitor: false
+    customQueriesConfigMap:
+      - name: cnpg-default-monitoring
+        key: queries
+    disableDefaultQueries: false

@@ -1,0 +1,58 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-cnpg-cluster
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: http://192.168.67.201/digitalsupply/platform-gitops.git
+    targetRevision: main
+    path: platform/cnpg/cluster
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cnpg-system
+  ignoreDifferences:
+    - group: postgresql.cnpg.io
+      kind: Cluster
+      jsonPointers:
+        # CNPG Operator 回填的默认值（不是业务意图）
+        - /spec/enablePDB
+        - /spec/failoverDelay
+        - /spec/logLevel
+        - /spec/maxSyncReplicas
+        - /spec/minSyncReplicas
+        - /spec/postgresGID
+        - /spec/postgresUID
+        - /spec/postgresql/syncReplicaElectionConstraint
+        - /spec/probes
+        - /spec/replicationSlots
+        - /spec/smartShutdownTimeout
+        - /spec/startDelay
+        - /spec/stopDelay
+        - /spec/switchoverDelay
+        - /status
+    - group: postgresql.cnpg.io
+      kind: ObjectStore
+      jsonPointers:
+        - /status
+    - group: postgresql.cnpg.io
+      kind: ScheduledBackup
+      jsonPointers:
+        - /status
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - SkipDryRunOnMissingResource=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m

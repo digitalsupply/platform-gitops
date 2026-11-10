@@ -1,0 +1,38 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  labels:
+    app.kubernetes.io/part-of: platform
+  name: platform-traefik
+  namespace: argocd
+spec:
+  destination:
+    namespace: traefik
+    server: https://kubernetes.default.svc
+  project: default
+  sources:
+    # Helm chart source
+    - repoURL: https://traefik.github.io/charts
+      chart: traefik
+      targetRevision: 42.3.1
+      helm:
+        releaseName: traefik
+        valueFiles:
+          - $values/platform/traefik/values.yaml
+    # Values source (same repo as app-of-apps)
+    - repoURL: http://192.168.67.201/digitalsupply/platform-gitops.git
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+      limit: 5
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

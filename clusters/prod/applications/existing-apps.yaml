@@ -1,0 +1,174 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: china-study-free
+  namespace: argocd
+spec:
+  destination:
+    namespace: china-study-free
+    server: https://kubernetes.default.svc
+  project: default
+  source:
+    path: overlays/prod
+    repoURL: http://192.168.67.201/digitalsupply/china-study-free-gitops.git
+    targetRevision: main
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+      limit: 5
+    syncOptions:
+    - CreateNamespace=true
+    - ServerSideApply=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  labels:
+    app.kubernetes.io/part-of: compassio-cicd
+  name: compassio
+  namespace: argocd
+spec:
+  destination:
+    namespace: compassio
+    server: https://kubernetes.default.svc
+  project: default
+  source:
+    path: overlays/prod
+    repoURL: http://192.168.67.201/digitalsupply/compassio-gitops.git
+    targetRevision: main
+  ignoreDifferences:
+  # HPA owns the backend replica count. Without this, ArgoCD selfHeal would
+  # scale the HPA back to the Git value (1) on every sync.
+  - group: apps
+    kind: Deployment
+    name: compassio-backend
+    jsonPointers:
+    - /spec/replicas
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - Prune=false
+    - RespectIgnoreDifferences=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+    argocd.argoproj.io/hydrate: normal
+  name: deeptutor
+  namespace: argocd
+spec:
+  destination:
+    namespace: deeptutor
+    server: https://kubernetes.default.svc
+  project: default
+  source:
+    path: overlays/prod
+    repoURL: http://192.168.67.201/deeptutor/deeptutor-gitops.git
+    targetRevision: main
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+      limit: 5
+    syncOptions:
+    - CreateNamespace=true
+    - ServerSideApply=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+    refresh: hard
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+  name: open-webui
+  namespace: argocd
+spec:
+  destination:
+    namespace: open-webui
+    server: https://kubernetes.default.svc
+  project: default
+  source:
+    path: overlays/prod
+    repoURL: http://192.168.67.201/digitalsupply/openwebui-gitops.git
+    targetRevision: main
+  syncPolicy:
+    automated:
+      allowEmpty: false
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+      limit: 5
+    syncOptions:
+    - CreateNamespace=true
+    - ServerSideApply=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tekton-config
+  namespace: argocd
+spec:
+  destination:
+    namespace: tekton-pipelines
+    server: https://kubernetes.default.svc
+  project: default
+  source:
+    path: config
+    repoURL: http://192.168.67.201/digitalsupply/tekton-platform-gitops.git
+    targetRevision: main
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+    - ServerSideApply=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tekton-operator
+  namespace: argocd
+spec:
+  destination:
+    namespace: tekton-operator
+    server: https://kubernetes.default.svc
+  ignoreDifferences:
+  - group: apiextensions.k8s.io
+    jqPathExpressions:
+    - .spec.conversion
+    jsonPointers:
+    - /spec/conversion
+    - /spec/preserveUnknownFields
+    kind: CustomResourceDefinition
+  project: default
+  source:
+    path: operator
+    repoURL: http://192.168.67.201/digitalsupply/tekton-platform-gitops.git
+    targetRevision: main
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - ServerSideApply=true

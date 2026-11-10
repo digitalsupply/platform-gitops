@@ -1,0 +1,1546 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  labels:
+    app.kubernetes.io/part-of: china-study-free-cicd
+  name: china-study-free-cicd
+  namespace: cicd
+spec:
+  description: GitLab push -> build/push Harbor -> update GitOps -> Argo CD.
+  params:
+  - default: http://192.168.67.201/digitalsupply/ChinaStudyFree.git
+    name: git-url
+    type: string
+  - name: git-revision
+    type: string
+  - default: ''
+    name: git-before
+    type: string
+  - default: 192.168.67.202:8443/china-study-free/web
+    name: image-repository
+    type: string
+  - name: image-tag
+    type: string
+  - default: http://192.168.67.201/digitalsupply/china-study-free-gitops.git
+    name: gitops-url
+    type: string
+  - default: 192.168.67.202:8443/deeptutor/node:22-slim
+    name: node-image
+    type: string
+  - default: https://registry.npmmirror.com
+    name: npm-registry
+    type: string
+  tasks:
+  - name: clone
+    params:
+    - name: url
+      value: $(params.git-url)
+    - name: revision
+      value: $(params.git-revision)
+    - name: depth
+      value: '1'
+    taskRef:
+      kind: Task
+      name: git-clone
+    workspaces:
+    - name: output
+      workspace: shared-workspace
+  - name: check-changes
+    params:
+    - name: url
+      value: $(params.git-url)
+    - name: before
+      value: $(params.git-before)
+    - name: after
+      value: $(params.git-revision)
+    runAfter:
+    - clone
+    taskRef:
+      kind: Task
+      name: china-study-free-check-changes
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+  - name: build-push
+    params:
+    - name: image
+      value: $(params.image-repository):$(params.image-tag)
+    - name: context
+      value: source
+    - name: dockerfile
+      value: docker/Dockerfile
+    - name: node-image
+      value: $(params.node-image)
+    - name: npm-registry
+      value: $(params.npm-registry)
+    runAfter:
+    - check-changes
+    taskRef:
+      kind: Task
+      name: china-study-free-build-push
+    when:
+    - input: $(tasks.check-changes.results.need-build)
+      operator: in
+      values:
+      - 'true'
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+  - name: update-gitops
+    params:
+    - name: image-tag
+      value: $(params.image-tag)
+    - name: gitops-url
+      value: $(params.gitops-url)
+    runAfter:
+    - build-push
+    taskRef:
+      kind: Task
+      name: china-study-free-update-gitops
+    when:
+    - input: $(tasks.check-changes.results.need-build)
+      operator: in
+      values:
+      - 'true'
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+  workspaces:
+  - name: shared-workspace
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  labels:
+    app.kubernetes.io/part-of: compassio-cicd
+  name: compassio-cicd
+  namespace: cicd
+spec:
+  description: 'Compassio CI/CD: clone from GitLab, build backend+frontend images,
+    push to Harbor, promote tags in GitOps repo (Argo CD auto-syncs).'
+  params:
+  - default: http://192.168.67.201/digitalsupply/compassio.git
+    name: git-url
+    type: string
+  - default: main
+    name: git-revision
+    type: string
+  - default: ''
+    name: git-before
+    type: string
+  - default: 192.168.67.202:8443/compassio/backend
+    name: image-repository-backend
+    type: string
+  - default: 192.168.67.202:8443/compassio/frontend
+    name: image-repository-frontend
+    type: string
+  - description: Tag to build and promote (commit SHA or uid)
+    name: image-tag
+    type: string
+  tasks:
+  - name: clone
+    params:
+    - name: url
+      value: $(params.git-url)
+    - name: revision
+      value: $(params.git-revision)
+    taskRef:
+      kind: Task
+      name: git-clone
+    workspaces:
+    - name: output
+      workspace: shared-workspace
+  - description: 只改文档/CI 清单时不构建,避免无意义的镜像与滚动重启
+    name: check-changes
+    params:
+    - name: url
+      value: $(params.git-url)
+    - name: before
+      value: $(params.git-before)
+    - name: after
+      value: $(params.git-revision)
+    - name: subdirectory
+      value: source
+    - name: build-patterns
+      value: backend/* frontend/*
+    runAfter:
+    - clone
+    taskRef:
+      kind: Task
+      name: compassio-check-changes
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+  - name: build-push-backend
+    params:
+    - name: image
+      value: $(params.image-repository-backend):$(params.image-tag)
+    - name: context
+      value: source/backend
+    - name: dockerfile
+      value: Dockerfile
+    runAfter:
+    - clone
+    taskRef:
+      kind: Task
+      name: compassio-build-push
+    when:
+    - input: $(tasks.check-changes.results.need-build)
+      operator: in
+      values:
+      - 'true'
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+  - name: build-push-frontend
+    params:
+    - name: image
+      value: $(params.image-repository-frontend):$(params.image-tag)
+    - name: context
+      value: source/frontend
+    - name: dockerfile
+      value: Dockerfile
+    runAfter:
+    - clone
+    taskRef:
+      kind: Task
+      name: compassio-build-push
+    when:
+    - input: $(tasks.check-changes.results.need-build)
+      operator: in
+      values:
+      - 'true'
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+  - name: promote-gitops
+    params:
+    - name: image-tag
+      value: $(params.image-tag)
+    runAfter:
+    - build-push-backend
+    - build-push-frontend
+    taskRef:
+      kind: Task
+      name: compassio-update-gitops
+    when:
+    - input: $(tasks.check-changes.results.need-build)
+      operator: in
+      values:
+      - 'true'
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+  workspaces:
+  - name: shared-workspace
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  labels:
+    app.kubernetes.io/part-of: deeptutor-cicd
+  name: deeptutor-cicd
+  namespace: cicd
+spec:
+  description: 'DeepTutor CI/CD: clone from GitLab, build the all-in-one image, push
+    to Harbor, promote the tag in deeptutor-gitops (Argo CD auto-syncs).'
+  params:
+  - default: http://192.168.67.201/deeptutor/deeptutor.git
+    name: git-url
+    type: string
+  - name: git-revision
+    type: string
+  - default: ''
+    name: git-before
+    type: string
+  - default: 192.168.67.202:8443/deeptutor/deeptutor
+    name: image-repository
+    type: string
+  - name: image-tag
+    type: string
+  tasks:
+  - name: clone
+    params:
+    - name: url
+      value: $(params.git-url)
+    - name: revision
+      value: $(params.git-revision)
+    - name: depth
+      value: '1'
+    taskRef:
+      kind: Task
+      name: git-clone
+    workspaces:
+    - name: output
+      workspace: shared-workspace
+  - description: 只改文档时不构建,避免无意义的镜像与滚动重启
+    name: check-changes
+    params:
+    - name: url
+      value: $(params.git-url)
+    - name: before
+      value: $(params.git-before)
+    - name: after
+      value: $(params.git-revision)
+    - name: subdirectory
+      value: source
+    runAfter:
+    - clone
+    taskRef:
+      kind: Task
+      name: deeptutor-check-changes
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+  - name: build-push
+    params:
+    - name: image
+      value: $(params.image-repository):$(params.image-tag)
+    - name: context
+      value: source
+    - name: dockerfile
+      value: Dockerfile
+    runAfter:
+    - clone
+    taskRef:
+      kind: Task
+      name: deeptutor-build-push
+    when:
+    - input: $(tasks.check-changes.results.need-build)
+      operator: in
+      values:
+      - 'true'
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+  - name: update-gitops
+    params:
+    - name: image-tag
+      value: $(params.image-tag)
+    runAfter:
+    - build-push
+    taskRef:
+      kind: Task
+      name: deeptutor-update-gitops
+    when:
+    - input: $(tasks.check-changes.results.need-build)
+      operator: in
+      values:
+      - 'true'
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+  workspaces:
+  - name: shared-workspace
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  labels:
+    app.kubernetes.io/part-of: openwebui-cicd
+  name: open-webui-cicd
+  namespace: cicd
+spec:
+  description: 'Open WebUI CI/CD: clone from GitLab -> build image -> push to Harbor
+    -> promote the tag in the GitOps repo (Argo CD then syncs to the cluster).
+
+    '
+  params:
+  - default: http://192.168.67.201/digitalsupply/openwebui.git
+    name: git-url
+    type: string
+  - default: main
+    name: git-revision
+    type: string
+  - default: 192.168.67.202:8443/openwebui/open-webui
+    name: image-repository
+    type: string
+  - description: Tag to build and promote (commit SHA or branch-suffixed)
+    name: image-tag
+    type: string
+  tasks:
+  - name: clone
+    params:
+    - name: url
+      value: $(params.git-url)
+    - name: revision
+      value: $(params.git-revision)
+    taskRef:
+      kind: Task
+      name: git-clone
+    workspaces:
+    - name: output
+      workspace: shared-workspace
+  - name: build-push
+    params:
+    - name: image
+      value: $(params.image-repository):$(params.image-tag)
+    - name: context
+      value: source
+    - name: dockerfile
+      value: Dockerfile.harbor
+    runAfter:
+    - clone
+    taskRef:
+      kind: Task
+      name: build-and-push
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+  - name: promote-gitops
+    params:
+    - name: image-tag
+      value: $(params.image-tag)
+    runAfter:
+    - build-push
+    taskRef:
+      kind: Task
+      name: update-gitops-tag
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+  workspaces:
+  - name: shared-workspace
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  labels:
+    app.kubernetes.io/part-of: openwebui-cicd
+  name: build-and-push
+  namespace: cicd
+spec:
+  description: Build the Open WebUI image with Kaniko and push it to Harbor
+  params:
+  - description: Fully-qualified destination image (registry/project/name:tag)
+    name: image
+    type: string
+  - default: source
+    description: Sub-path of the workspace holding the build context
+    name: context
+    type: string
+  - default: Dockerfile.harbor
+    name: dockerfile
+    type: string
+  steps:
+  - args:
+    - --dockerfile=$(workspaces.source.path)/$(params.context)/$(params.dockerfile)
+    - --context=$(workspaces.source.path)/$(params.context)
+    - --destination=$(params.image)
+    - --build-arg
+    - USE_SLIM=true
+    - --insecure
+    - --skip-tls-verify
+    - --insecure-pull
+    - --cache=true
+    - --cache-repo=192.168.67.202:8443/openwebui/cache
+    - --single-snapshot
+    - --verbosity=info
+    computeResources: {}
+    env:
+    - name: DOCKER_CONFIG
+      value: /kaniko/.docker
+    image: 192.168.67.202:8443/openwebui/kaniko:v1.23.2
+    name: build
+    securityContext:
+      runAsUser: 0
+    volumeMounts:
+    - mountPath: /kaniko/.docker
+      name: docker-config
+    workingDir: $(workspaces.source.path)/$(params.context)
+  volumes:
+  - name: docker-config
+    secret:
+      items:
+      - key: .dockerconfigjson
+        path: config.json
+      secretName: harbor-auth
+  workspaces:
+  - name: source
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  labels:
+    app.kubernetes.io/part-of: china-study-free-cicd
+  name: china-study-free-build-push
+  namespace: cicd
+spec:
+  description: Build the all-in-one web+AI image with BuildKit and push to Harbor.
+  params:
+  - description: Fully-qualified destination image (registry/project/name:tag)
+    name: image
+    type: string
+  - default: ''
+    name: context
+    type: string
+  - default: docker/Dockerfile
+    name: dockerfile
+    type: string
+  - default: node:20-slim
+    name: node-image
+    type: string
+  - default: https://registry.npmmirror.com
+    name: npm-registry
+    type: string
+  steps:
+  - computeResources: {}
+    env:
+    - name: DOCKER_CONFIG
+      value: /home/user/.docker
+    - name: BUILDKIT_HOST
+      value: tcp://buildkitd.cicd.svc.cluster.local:1234
+    image: 192.168.67.202:8443/compassio/buildkit:v0.20.2-rootless
+    name: build
+    script: "#!/bin/sh\nset -eu\ncat /etc/ssl/certs/ca-certificates.crt /etc/harbor-ca/ca.crt\
+      \ > /tmp/ca-bundle.crt\nexport SSL_CERT_FILE=/tmp/ca-bundle.crt\nbuildctl build\
+      \ \\\n  --frontend dockerfile.v0 \\\n  --local \"context=$(pwd)/$(params.context)\"\
+      \ \\\n  --local \"dockerfile=$(pwd)/$(params.context)\" \\\n  --opt \"filename=$(params.dockerfile)\"\
+      \ \\\n  --opt \"target=runtime\" \\\n  --opt \"build-arg:NODE_IMAGE=$(params.node-image)\"\
+      \ \\\n  --opt \"build-arg:NPM_REGISTRY=$(params.npm-registry)\" \\\n  --output\
+      \ \"type=image,name=$(params.image),push=true\" \\\n  --export-cache type=inline\n\
+      echo \"Pushed image: $(params.image)\"\n"
+    volumeMounts:
+    - mountPath: /home/user/.docker
+      name: docker-config
+    - mountPath: /etc/harbor-ca
+      name: harbor-ca
+      readOnly: true
+    workingDir: $(workspaces.source.path)
+  volumes:
+  - name: docker-config
+    secret:
+      items:
+      - key: .dockerconfigjson
+        path: config.json
+      secretName: harbor-auth
+  - configMap:
+      name: harbor-ca
+    name: harbor-ca
+  workspaces:
+  - name: source
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  labels:
+    app.kubernetes.io/part-of: china-study-free-cicd
+  name: china-study-free-check-changes
+  namespace: cicd
+spec:
+  params:
+  - name: url
+    type: string
+  - name: before
+    type: string
+  - name: after
+    type: string
+  - default: source
+    name: subdirectory
+    type: string
+  - default: '*.md docs/* openwiki/* deploy/* .github/* AGENTS.md k12/*'
+    name: docs-patterns
+    type: string
+  results:
+  - name: need-build
+    type: string
+  - name: reason
+    type: string
+  steps:
+  - computeResources: {}
+    env:
+    - name: GIT_USERNAME
+      valueFrom:
+        secretKeyRef:
+          key: username
+          name: china-study-free-gitlab-auth
+    - name: GIT_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          key: password
+          name: china-study-free-gitlab-auth
+    - name: GIT_URL
+      value: $(params.url)
+    - name: BEFORE
+      value: $(params.before)
+    - name: AFTER
+      value: $(params.after)
+    - name: SUBDIR
+      value: $(params.subdirectory)
+    - name: DOCS_PATTERNS
+      value: $(params.docs-patterns)
+    image: alpine/git:v2.45.2
+    name: check
+    script: "#!/bin/sh\nset -eu\nNEED=\"$(results.need-build.path)\"\nREASON=\"$(results.reason.path)\"\
+      \nfinish() { printf '%s' \"$1\" > \"$NEED\"; printf '%s' \"$2\" > \"$REASON\"\
+      ; echo \"[check-changes] $1: $2\"; exit 0; }\nbuild() { finish \"true\" \"$1\"\
+      ; }\n[ -n \"$AFTER\" ] || build \"webhook 未提供 after\"\nSRC=\"$(workspaces.source.path)/$SUBDIR\"\
+      \nNO_SCHEME=\"${GIT_URL#*://}\"\nHOST_PART=\"${NO_SCHEME%%/*}\"\nPATH_PART=\"\
+      ${NO_SCHEME#*/}\"\nAUTH_URL=\"http://${GIT_USERNAME}:${GIT_PASSWORD}@${HOST_PART}/${PATH_PART}\"\
+      \nif [ ! -d \"$SRC/.git\" ]; then\n  build \"workspace 中没有 git 仓库\"\nfi\ncd\
+      \ \"$SRC\"\nset -f\ncase \"$BEFORE\" in\n  \"\"|0000000000000000000000000000000000000000)\
+      \ build \"无可比较的 before\" ;;\nesac\nhas_commit() { git cat-file -e \"$1^{commit}\"\
+      \ 2>/dev/null; }\nif ! has_commit \"$BEFORE\"; then\n  git remote set-url origin\
+      \ \"$AUTH_URL\" 2>/dev/null || true\n  git fetch --depth 1 origin \"$BEFORE\"\
+      \ >/dev/null 2>&1 || true\nfi\nif ! has_commit \"$BEFORE\"; then\n  git fetch\
+      \ --deepen=20 origin >/dev/null 2>&1 || true\nfi\nif ! has_commit \"$BEFORE\"\
+      ; then\n  build \"无法解析 before=$BEFORE\"\nfi\nCHANGED=\"$(git diff --name-only\
+      \ \"$BEFORE\" \"$AFTER\" 2>/dev/null || true)\"\n[ -n \"$CHANGED\" ] || build\
+      \ \"diff 为空或失败\"\nNON_DOCS=\"\"\nCOUNT=0\nprintf '%s\\n' \"$CHANGED\" > /tmp/changed.txt\n\
+      while IFS= read -r f; do\n  [ -n \"$f\" ] || continue\n  COUNT=$((COUNT + 1))\n\
+      \  HIT=\"false\"\n  for pat in $DOCS_PATTERNS; do\n    case \"$f\" in $pat)\
+      \ HIT=\"true\"; break ;; esac\n  done\n  [ \"$HIT\" = \"true\" ] || NON_DOCS=\"\
+      $NON_DOCS $f\"\ndone < /tmp/changed.txt\nif [ -z \"$NON_DOCS\" ]; then\n  finish\
+      \ \"false\" \"仅文档/部署改动($COUNT 个文件)，跳过构建\"\nfi\nbuild \"包含运行时改动:$(echo \"$NON_DOCS\"\
+      \ | cut -c1-500)\"\n"
+  workspaces:
+  - name: source
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  labels:
+    app.kubernetes.io/part-of: china-study-free-cicd
+  name: china-study-free-update-gitops
+  namespace: cicd
+spec:
+  description: Update the image newTag in china-study-free-gitops and push.
+  params:
+  - name: image-tag
+    type: string
+  - default: http://192.168.67.201/digitalsupply/china-study-free-gitops.git
+    name: gitops-url
+    type: string
+  - default: overlays/prod/kustomization.yaml
+    name: kustomize-path
+    type: string
+  - default: gitops
+    name: gitops-subdir
+    type: string
+  steps:
+  - computeResources: {}
+    env:
+    - name: GIT_USERNAME
+      valueFrom:
+        secretKeyRef:
+          key: username
+          name: china-study-free-gitlab-auth
+    - name: GIT_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          key: password
+          name: china-study-free-gitlab-auth
+    - name: GITOPS_URL
+      value: $(params.gitops-url)
+    - name: IMAGE_TAG
+      value: $(params.image-tag)
+    - name: KUSTOMIZE_PATH
+      value: $(params.kustomize-path)
+    - name: GITOPS_SUBDIR
+      value: $(params.gitops-subdir)
+    image: alpine/git:2.45.2
+    name: patch-and-commit
+    script: "#!/bin/sh\nset -eu\ncd \"$(workspaces.source.path)\"\nDIR=\"${GITOPS_SUBDIR}\"\
+      \n\nNO_SCHEME=\"${GITOPS_URL#*://}\"\nHOST_PART=\"${NO_SCHEME%%/*}\"\nPATH_PART=\"\
+      ${NO_SCHEME#*/}\"\nAUTH_URL=\"http://${GIT_USERNAME}:${GIT_PASSWORD}@${HOST_PART}/${PATH_PART}\"\
+      \n\nif [ ! -d \"$DIR\" ]; then\n  git clone \"$AUTH_URL\" \"$DIR\"\nelse\n \
+      \ cd \"$DIR\"\n  git remote set-url origin \"$AUTH_URL\"\n  git pull --ff-only\
+      \ origin main\nfi\n\ncd \"$DIR\"\ngit config user.name \"china-study-free-cicd-bot\"\
+      \ngit config user.email \"china-study-free-cicd-bot@users.noreply.local\"\n\
+      sed -i \"s#^\\( *newTag:\\).*#\\1 ${IMAGE_TAG}#\" \"$KUSTOMIZE_PATH\"\n\nif\
+      \ git diff --quiet -- \"$KUSTOMIZE_PATH\"; then\n  echo \"No change needed:\
+      \ already ${IMAGE_TAG}\"\n  exit 0\nfi\necho \"--- diff ---\"\ngit --no-pager\
+      \ diff -- \"$KUSTOMIZE_PATH\"\ngit add \"$KUSTOMIZE_PATH\"\ngit commit -m \"\
+      ci: promote china-study-free image ${IMAGE_TAG}\"\ngit push origin HEAD:main\n\
+      echo \"GitOps updated to ${IMAGE_TAG}; Argo CD will sync.\"\n"
+    workingDir: $(workspaces.source.path)
+  workspaces:
+  - name: source
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  labels:
+    app.kubernetes.io/part-of: compassio-cicd
+  name: compassio-build-push
+  namespace: cicd
+spec:
+  description: Build an image with BuildKit and push to Harbor project compassio
+  params:
+  - description: Fully-qualified destination image (registry/project/name:tag)
+    name: image
+    type: string
+  - default: ''
+    description: Sub-path of the workspace holding the build context
+    name: context
+    type: string
+  - default: Dockerfile
+    name: dockerfile
+    type: string
+  steps:
+  - computeResources: {}
+    env:
+    - name: DOCKER_CONFIG
+      value: /home/user/.docker
+    - name: BUILDKIT_HOST
+      value: tcp://buildkitd.cicd.svc.cluster.local:1234
+    image: 192.168.67.202:8443/compassio/buildkit:v0.20.2-rootless
+    name: build
+    script: "#!/bin/sh\nset -eu\n# buildctl 客户端自身会做 registry token 交换；客户端镜像的 CA 库没有\
+      \ Harbor 自签 CA，\n# 必须把 harbor-ca 合并进信任库，否则报 x509: certificate signed by unknown\
+      \ authority。\ncat /etc/ssl/certs/ca-certificates.crt /etc/harbor-ca/ca.crt >\
+      \ /tmp/ca-bundle.crt\nexport SSL_CERT_FILE=/tmp/ca-bundle.crt\nbuildctl build\
+      \ \\\n  --frontend dockerfile.v0 \\\n  --local \"context=$(pwd)\" \\\n  --local\
+      \ \"dockerfile=$(pwd)\" \\\n  --opt \"filename=$(params.dockerfile)\" \\\n \
+      \ --output \"type=image,name=$(params.image),push=true\" \\\n  --export-cache\
+      \ type=inline\necho \"Pushed image: $(params.image)\"\n"
+    volumeMounts:
+    - mountPath: /home/user/.docker
+      name: docker-config
+    - mountPath: /etc/harbor-ca
+      name: harbor-ca
+      readOnly: true
+    workingDir: $(workspaces.source.path)/$(params.context)
+  volumes:
+  - name: docker-config
+    secret:
+      items:
+      - key: .dockerconfigjson
+        path: config.json
+      secretName: harbor-auth
+  - configMap:
+      name: harbor-ca
+    name: harbor-ca
+  workspaces:
+  - name: source
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  labels:
+    app.kubernetes.io/part-of: compassio-cicd
+  name: compassio-check-changes
+  namespace: cicd
+spec:
+  description: Decide whether a push touches the image build contexts. Sets results.need-build
+    so build/promote tasks can be skipped with `when`.
+  params:
+  - name: url
+    type: string
+  - description: Previous tip SHA from the webhook (body.before).
+    name: before
+    type: string
+  - description: Pushed commit SHA (body.checkout_sha / body.after).
+    name: after
+    type: string
+  - default: source
+    name: subdirectory
+    type: string
+  - default: backend/* frontend/*
+    name: build-patterns
+    type: string
+  results:
+  - description: '''true'' 需要构建,''false'' 本次改动不进镜像。'
+    name: need-build
+    type: string
+  - description: 人类可读的判定原因。
+    name: reason
+    type: string
+  - description: 本次改动的文件(截断到 1500 字符)。
+    name: changed-files
+    type: string
+  steps:
+  - computeResources: {}
+    env:
+    - name: GIT_USERNAME
+      valueFrom:
+        secretKeyRef:
+          key: username
+          name: gitlab-auth
+    - name: GIT_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          key: password
+          name: gitlab-auth
+    - name: GIT_URL
+      value: $(params.url)
+    - name: BEFORE
+      value: $(params.before)
+    - name: AFTER
+      value: $(params.after)
+    - name: SUBDIR
+      value: $(params.subdirectory)
+    - name: BUILD_PATTERNS
+      value: $(params.build-patterns)
+    image: alpine/git:v2.45.2
+    name: check
+    script: "#!/bin/sh\nset -eu\n\nNEED=\"$(results.need-build.path)\"\nREASON=\"\
+      $(results.reason.path)\"\nFILES=\"$(results.changed-files.path)\"\nMAX_FILES_CHARS=1500\n\
+      \nlog() { echo \"[check-changes] $*\"; }\n\nfinish() {\n  # $1 = true|false,\
+      \ $2 = reason\n  printf '%s' \"$1\" > \"$NEED\"\n  printf '%s' \"$2\" > \"$REASON\"\
+      \n  log \"$1: $2\"\n  exit 0\n}\nbuild() { finish \"true\" \"$1\"; }\n\n[ -n\
+      \ \"$AFTER\" ] || build \"webhook 未提供 after SHA\"\n\nSRC=\"$(workspaces.source.path)/$SUBDIR\"\
+      \nNO_SCHEME=\"${GIT_URL#*://}\"\nHOST_PART=\"${NO_SCHEME%%/*}\"\nPATH_PART=\"\
+      ${NO_SCHEME#*/}\"\nAUTH_URL=\"http://${GIT_USERNAME}:${GIT_PASSWORD}@${HOST_PART}/${PATH_PART}\"\
+      \n\n# 流水线里 clone 任务已经把 after 检出到工作区;单独跑 TaskRun 时没有,\n# 这里自己浅克隆一份,方便离线验证判定逻辑。\n\
+      if [ ! -d \"$SRC/.git\" ]; then\n  log \"workspace 里没有仓库,浅克隆 $AFTER\"\n  rm\
+      \ -rf \"$SRC\"\n  git clone --depth 1 --no-single-branch \"$AUTH_URL\" \"$SRC\"\
+      \ >/dev/null 2>&1 \\\n    || build \"克隆失败\"\n  git -C \"$SRC\" fetch --depth\
+      \ 1 origin \"$AFTER\" >/dev/null 2>&1 || true\n  git -C \"$SRC\" checkout -q\
+      \ \"$AFTER\" 2>/dev/null || true\nfi\n\ncd \"$SRC\"\n\n# 关闭文件名展开:下面的 `for pat\
+      \ in $PATTERNS` 只按空格切分模式。\n# 否则脚本在仓库目录里运行时,`backend/*` 会被展开成实际子目录\n# (backend/app、backend/tests\
+      \ …),导致所有模式失配、误判为\"无需构建\"。\nset -f\n\n# 新分支/首次推送:before 全 0,没有可比较的基线 → 构建\n\
+      case \"$BEFORE\" in\n  \"\" | 0000000000000000000000000000000000000000)\n  \
+      \  build \"无可比较的 before(新分支或首次推送)\" ;;\nesac\n\nhas_commit() { git cat-file\
+      \ -e \"$1^{commit}\" 2>/dev/null; }\n\nif ! has_commit \"$BEFORE\"; then\n \
+      \ log \"本地没有 $BEFORE,尝试按 SHA 拉取\"\n  git remote set-url origin \"$AUTH_URL\"\
+      \ 2>/dev/null || true\n  git fetch --depth 1 origin \"$BEFORE\" >/dev/null 2>&1\
+      \ || true\nfi\nif ! has_commit \"$BEFORE\"; then\n  log \"按 SHA 拉取失败,尝试 deepen\
+      \ 20\"\n  git fetch --deepen=20 origin >/dev/null 2>&1 || true\nfi\nif ! has_commit\
+      \ \"$BEFORE\"; then\n  build \"无法解析 before=$BEFORE(可能是 force-push/过深历史)\"\n\
+      fi\n\nCHANGED_LIST=\"$(git diff --name-only \"$BEFORE\" \"$AFTER\" 2>/dev/null\
+      \ || true)\"\nif [ -z \"$CHANGED_LIST\" ]; then\n  build \"diff 为空或失败(before=$BEFORE\
+      \ after=$AFTER)\"\nfi\n\nprintf '%s' \"$CHANGED_LIST\" | head -c 1200 > \"$FILES\"\
+      \n\nMATCHED=\"\"\nOTHER=\"\"\nCOUNT=0\nprintf '%s\\n' \"$CHANGED_LIST\" > /tmp/changed.txt\n\
+      while IFS= read -r f; do\n  [ -n \"$f\" ] || continue\n  COUNT=$((COUNT + 1))\n\
+      \  HIT=\"false\"\n  for pat in $BUILD_PATTERNS; do\n    # shellcheck disable=SC2254\n\
+      \    case \"$f\" in\n      $pat) HIT=\"true\"; break ;;\n    esac\n  done\n\
+      \  if [ \"$HIT\" = \"true\" ]; then\n    MATCHED=\"$MATCHED $f\"\n  else\n \
+      \   OTHER=\"$OTHER $f\"\n  fi\ndone < /tmp/changed.txt\n\nif [ -n \"$MATCHED\"\
+      \ ]; then\n  build \"命中构建路径:$(echo \"$MATCHED\" | cut -c1-200)\"\nfi\nfinish\
+      \ \"false\" \"无 backend/frontend 改动($COUNT 个文件),跳过构建:$(echo \"$OTHER\" | cut\
+      \ -c1-200)\"\n"
+  workspaces:
+  - name: source
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  labels:
+    app.kubernetes.io/part-of: compassio-cicd
+  name: compassio-update-gitops
+  namespace: cicd
+spec:
+  description: Update backend/frontend newTag in compassio-gitops and push
+  params:
+  - name: image-tag
+    type: string
+  - default: http://192.168.67.201/digitalsupply/compassio-gitops.git
+    name: gitops-url
+    type: string
+  - default: overlays/prod/kustomization.yaml
+    name: kustomize-path
+    type: string
+  - default: gitops
+    name: gitops-subdir
+    type: string
+  steps:
+  - computeResources: {}
+    env:
+    - name: GIT_USERNAME
+      valueFrom:
+        secretKeyRef:
+          key: username
+          name: gitlab-auth
+    - name: GIT_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          key: password
+          name: gitlab-auth
+    - name: GITOPS_URL
+      value: $(params.gitops-url)
+    - name: IMAGE_TAG
+      value: $(params.image-tag)
+    - name: KUSTOMIZE_PATH
+      value: $(params.kustomize-path)
+    - name: GITOPS_SUBDIR
+      value: $(params.gitops-subdir)
+    image: alpine/git:v2.45.2
+    name: patch-and-commit
+    script: "#!/bin/sh\nset -eu\ncd \"$(workspaces.source.path)\"\nDIR=\"${GITOPS_SUBDIR}\"\
+      \n\nNO_SCHEME=\"${GITOPS_URL#*://}\"\nHOST_PART=\"${NO_SCHEME%%/*}\"\nPATH_PART=\"\
+      ${NO_SCHEME#*/}\"\nAUTH_URL=\"http://${GIT_USERNAME}:${GIT_PASSWORD}@${HOST_PART}/${PATH_PART}\"\
+      \n\nif [ ! -d \"$DIR\" ]; then\n  git clone \"$AUTH_URL\" \"$DIR\"\nelse\n \
+      \ cd \"$DIR\"\n  git remote set-url origin \"$AUTH_URL\"\n  git pull --ff-only\
+      \ origin main\nfi\n\ncd \"$DIR\"\ngit config user.name  \"compassio-cicd-bot\"\
+      \ngit config user.email \"compassio-cicd-bot@users.noreply.local\"\n\n# Rewrite\
+      \ every newTag under the images: transformers block (backend + frontend)\nsed\
+      \ -i \"s#^\\( *newTag:\\).*#\\1 ${IMAGE_TAG}#\" \"$KUSTOMIZE_PATH\"\n\nif git\
+      \ diff --quiet -- \"$KUSTOMIZE_PATH\"; then\n  echo \"No change needed: tags\
+      \ already ${IMAGE_TAG}\"\n  exit 0\nfi\necho \"--- diff ---\"\ngit --no-pager\
+      \ diff -- \"$KUSTOMIZE_PATH\"\ngit add \"$KUSTOMIZE_PATH\"\ngit commit -m \"\
+      ci(compassio): promote image tag ${IMAGE_TAG}\"\ngit push origin HEAD:main\n\
+      echo \"GitOps repo updated to tag ${IMAGE_TAG}; Argo CD will auto-sync.\"\n"
+    workingDir: $(workspaces.source.path)
+  workspaces:
+  - name: source
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  labels:
+    app.kubernetes.io/part-of: deeptutor-cicd
+  name: deeptutor-build-push
+  namespace: cicd
+spec:
+  description: Build the DeepTutor all-in-one image with BuildKit and push to Harbor
+    project deeptutor
+  params:
+  - description: Fully-qualified destination image (registry/project/name:tag)
+    name: image
+    type: string
+  - default: ''
+    description: Sub-path of the workspace holding the build context
+    name: context
+    type: string
+  - default: Dockerfile
+    name: dockerfile
+    type: string
+  steps:
+  - computeResources: {}
+    env:
+    - name: DOCKER_CONFIG
+      value: /home/user/.docker
+    - name: BUILDKIT_HOST
+      value: tcp://buildkitd.cicd.svc.cluster.local:1234
+    image: 192.168.67.202:8443/compassio/buildkit:v0.20.2-rootless
+    name: build
+    script: "#!/bin/sh\nset -eu\n# buildctl 客户端会做 registry token 交换;客户端镜像的 CA 库没有\
+      \ Harbor\n# 自签 CA,必须把 harbor-ca 合并进信任库,否则报 x509 unknown authority。\ncat /etc/ssl/certs/ca-certificates.crt\
+      \ /etc/harbor-ca/ca.crt > /tmp/ca-bundle.crt\nexport SSL_CERT_FILE=/tmp/ca-bundle.crt\n\
+      # 国内工具链镜像:PyPI 走清华、npm 走 npmmirror、Debian 走阿里云。\n# Dockerfile 的 ARG 默认值仍是官方源,本地构建不受影响。\n\
+      buildctl build \\\n  --frontend dockerfile.v0 \\\n  --local \"context=$(pwd)\"\
+      \ \\\n  --local \"dockerfile=$(pwd)\" \\\n  --opt \"filename=$(params.dockerfile)\"\
+      \ \\\n  --opt \"target=production\" \\\n  --opt build-arg:PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple\
+      \ \\\n  --opt build-arg:NPM_REGISTRY=https://registry.npmmirror.com \\\n  --opt\
+      \ build-arg:APT_MIRROR=mirrors.aliyun.com \\\n  --opt build-arg:NODE_IMAGE=192.168.67.202:8443/deeptutor/node:22-slim\
+      \ \\\n  --opt build-arg:PYTHON_IMAGE=192.168.67.202:8443/deeptutor/python:3.11-slim\
+      \ \\\n  --output \"type=image,name=$(params.image),push=true\" \\\n  --export-cache\
+      \ type=inline\necho \"Pushed image: $(params.image)\"\n"
+    volumeMounts:
+    - mountPath: /home/user/.docker
+      name: docker-config
+    - mountPath: /etc/harbor-ca
+      name: harbor-ca
+      readOnly: true
+    workingDir: $(workspaces.source.path)/$(params.context)
+  volumes:
+  - name: docker-config
+    secret:
+      items:
+      - key: .dockerconfigjson
+        path: config.json
+      secretName: harbor-auth
+  - configMap:
+      name: harbor-ca
+    name: harbor-ca
+  workspaces:
+  - name: source
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  labels:
+    app.kubernetes.io/part-of: deeptutor-cicd
+  name: deeptutor-check-changes
+  namespace: cicd
+spec:
+  description: Decide whether a push needs an image build. Docs-only pushes set results.need-build=false
+    so build/promote can be skipped with `when`.
+  params:
+  - name: url
+    type: string
+  - description: Previous tip SHA from the webhook (body.before).
+    name: before
+    type: string
+  - description: Pushed commit SHA (body.after), already cloned into the workspace.
+    name: after
+    type: string
+  - default: source
+    name: subdirectory
+    type: string
+  - default: '*.md docs/* docs-for-user/* openwiki/*'
+    name: docs-patterns
+    type: string
+  results:
+  - description: '''true'' 构建并 promote,''false'' 本次只改文档。'
+    name: need-build
+    type: string
+  - description: 人类可读的判定原因。
+    name: reason
+    type: string
+  - description: 本次改动的文件(截断到 1500 字符)。
+    name: changed-files
+    type: string
+  steps:
+  - computeResources: {}
+    env:
+    - name: GIT_USERNAME
+      valueFrom:
+        secretKeyRef:
+          key: username
+          name: gitlab-auth
+    - name: GIT_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          key: password
+          name: gitlab-auth
+    - name: GIT_URL
+      value: $(params.url)
+    - name: BEFORE
+      value: $(params.before)
+    - name: AFTER
+      value: $(params.after)
+    - name: SUBDIR
+      value: $(params.subdirectory)
+    - name: DOCS_PATTERNS
+      value: $(params.docs-patterns)
+    image: alpine/git:v2.45.2
+    name: check
+    script: "#!/bin/sh\nset -eu\n\nNEED=\"$(results.need-build.path)\"\nREASON=\"\
+      $(results.reason.path)\"\nFILES=\"$(results.changed-files.path)\"\n# 结果体有大小上限,这里主动截断,避免大改动把\
+      \ result 撑爆\nMAX_FILES_CHARS=300\n\nlog() { echo \"[check-changes] $*\"; }\n\
+      \nfinish() {\n  # $1 = true|false, $2 = reason\n  printf '%s' \"$1\" > \"$NEED\"\
+      \n  # Tekton stores results in the pod termination message (4KB total).\n  #\
+      \ A 1800-file merge would otherwise fail the TaskRun before build.\n  printf\
+      \ '%s' \"$2\" | cut -c1-300 > \"$REASON\"\n  log \"$1: $2\"\n  exit 0\n}\n\n\
+      build() { finish \"true\" \"$1\"; }\n\n[ -n \"$AFTER\" ] || build \"webhook\
+      \ 未提供 after SHA\"\n\nSRC=\"$(workspaces.source.path)/$SUBDIR\"\nNO_SCHEME=\"\
+      ${GIT_URL#*://}\"\nHOST_PART=\"${NO_SCHEME%%/*}\"\nPATH_PART=\"${NO_SCHEME#*/}\"\
+      \nAUTH_URL=\"http://${GIT_USERNAME}:${GIT_PASSWORD}@${HOST_PART}/${PATH_PART}\"\
+      \n\n# 流水线里 git-clone 已经把 after 检出到工作区;单独跑 TaskRun 时没有,\n# 这里自己浅克隆一份,方便离线验证判定逻辑。\n\
+      if [ ! -d \"$SRC/.git\" ]; then\n  log \"workspace 里没有仓库,浅克隆 $AFTER\"\n  rm\
+      \ -rf \"$SRC\"\n  git clone --depth 1 --no-single-branch \"$AUTH_URL\" \"$SRC\"\
+      \ >/dev/null 2>&1 \\\n    || { mkdir -p \"$(dirname \"$SRC\")\"; git clone --depth\
+      \ 1 \"--filter=blob:none\" \"$AUTH_URL\" \"$SRC\" >/dev/null 2>&1; } \\\n  \
+      \  || build \"克隆失败\"\n  git -C \"$SRC\" fetch --depth 1 origin \"$AFTER\" >/dev/null\
+      \ 2>&1 || true\n  git -C \"$SRC\" checkout -q \"$AFTER\" 2>/dev/null || true\n\
+      fi\n\ncd \"$SRC\"\n\n# 关闭文件名展开:下面的 `for pat in $PATTERNS` 只按空格切分模式。\n# 否则脚本在仓库目录里运行时,`docs/*`\
+      \ 会被展开成实际文件,\n# 导致模式失配(通常表现为该跳过却没跳过)。\nset -f\n\n# 新分支/首次推送:before 是全 0,没有可比较的基线\n\
+      case \"$BEFORE\" in\n  \"\" | 0000000000000000000000000000000000000000)\n  \
+      \  build \"无可比较的 before(新分支或首次推送)\" ;;\nesac\n\nhas_commit() { git cat-file\
+      \ -e \"$1^{commit}\" 2>/dev/null; }\n\nif ! has_commit \"$BEFORE\"; then\n \
+      \ log \"本地没有 $BEFORE,尝试按 SHA 拉取\"\n  git remote set-url origin \"$AUTH_URL\"\
+      \ 2>/dev/null || true\n  git fetch --depth 1 origin \"$BEFORE\" >/dev/null 2>&1\
+      \ || true\nfi\nif ! has_commit \"$BEFORE\"; then\n  # 单 commit 推送的常见情况:加深一层就能拿到父提交\n\
+      \  log \"按 SHA 拉取失败,尝试 deepen 20\"\n  git fetch --deepen=20 origin >/dev/null\
+      \ 2>&1 || true\nfi\nif ! has_commit \"$BEFORE\"; then\n  build \"无法解析 before=$BEFORE(可能是\
+      \ force-push/过深历史)\"\nfi\n\nCHANGED_LIST=\"$(git diff --name-only \"$BEFORE\"\
+      \ \"$AFTER\" 2>/dev/null || true)\"\nif [ -z \"$CHANGED_LIST\" ]; then\n  build\
+      \ \"diff 为空或失败(before=$BEFORE after=$AFTER)\"\nfi\n\n# `cut -c` is per-line;\
+      \ a 1800-file diff stays huge. Flatten first.\nprintf '%s' \"$CHANGED_LIST\"\
+      \ | tr '\\n' ' ' | cut -c1-\"$MAX_FILES_CHARS\" > \"$FILES\"\n\n# 逐个文件判断:全部命中\
+      \ docs-patterns 才跳过\nNON_DOCS=\"\"\nCOUNT=0\nprintf '%s\\n' \"$CHANGED_LIST\"\
+      \ > /tmp/changed.txt\nwhile IFS= read -r f; do\n  [ -n \"$f\" ] || continue\n\
+      \  COUNT=$((COUNT + 1))\n  HIT=\"false\"\n  for pat in $DOCS_PATTERNS; do\n\
+      \    # shellcheck disable=SC2254\n    case \"$f\" in\n      $pat) HIT=\"true\"\
+      ; break ;;\n    esac\n  done\n  [ \"$HIT\" = \"true\" ] || NON_DOCS=\"$NON_DOCS\
+      \ $f\"\ndone < /tmp/changed.txt\n\nif [ -z \"$NON_DOCS\" ]; then\n  finish \"\
+      false\" \"仅文档改动($COUNT 个文件),跳过构建:$(echo \"$CHANGED_LIST\" | tr '\\n' ' ')\"\n\
+      fi\n\nbuild \"包含非文档改动($COUNT 个文件):$(echo \"$NON_DOCS\" | cut -c1-180)\"\n"
+  workspaces:
+  - name: source
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  labels:
+    app.kubernetes.io/part-of: deeptutor-cicd
+  name: deeptutor-update-gitops
+  namespace: cicd
+spec:
+  description: Update the deeptutor image newTag in deeptutor-gitops and push; Argo
+    CD auto-syncs
+  params:
+  - name: image-tag
+    type: string
+  - default: http://192.168.67.201/deeptutor/deeptutor-gitops.git
+    name: gitops-url
+    type: string
+  - default: overlays/prod/kustomization.yaml
+    name: kustomize-path
+    type: string
+  - default: gitops
+    name: gitops-subdir
+    type: string
+  steps:
+  - computeResources: {}
+    env:
+    - name: GIT_USERNAME
+      valueFrom:
+        secretKeyRef:
+          key: username
+          name: deeptutor-gitlab-auth
+    - name: GIT_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          key: password
+          name: deeptutor-gitlab-auth
+    - name: GITOPS_URL
+      value: $(params.gitops-url)
+    - name: IMAGE_TAG
+      value: $(params.image-tag)
+    - name: KUSTOMIZE_PATH
+      value: $(params.kustomize-path)
+    - name: GITOPS_SUBDIR
+      value: $(params.gitops-subdir)
+    image: 192.168.67.202:8443/deeptutor/git:v2.45.2
+    name: patch-and-commit
+    script: "#!/bin/sh\nset -eu\ncd \"$(workspaces.source.path)\"\nDIR=\"${GITOPS_SUBDIR}\"\
+      \n\nNO_SCHEME=\"${GITOPS_URL#*://}\"\nHOST_PART=\"${NO_SCHEME%%/*}\"\nPATH_PART=\"\
+      ${NO_SCHEME#*/}\"\nAUTH_URL=\"http://${GIT_USERNAME}:${GIT_PASSWORD}@${HOST_PART}/${PATH_PART}\"\
+      \n\nif [ ! -d \"$DIR\" ]; then\n  git clone \"$AUTH_URL\" \"$DIR\"\nelse\n \
+      \ cd \"$DIR\"\n  git remote set-url origin \"$AUTH_URL\"\n  git pull --ff-only\
+      \ origin main\nfi\n\ncd \"$DIR\"\ngit config user.name  \"deeptutor-cicd-bot\"\
+      \ngit config user.email \"deeptutor-cicd-bot@users.noreply.local\"\n\n# overlays/prod/kustomization.yaml\
+      \ 里只有一行 newTag(应用镜像),整行改写\nsed -i \"s#^\\( *newTag:\\).*#\\1 ${IMAGE_TAG}#\"\
+      \ \"$KUSTOMIZE_PATH\"\n\nif git diff --quiet -- \"$KUSTOMIZE_PATH\"; then\n\
+      \  echo \"No change needed: tags already ${IMAGE_TAG}\"\n  exit 0\nfi\necho\
+      \ \"--- diff ---\"\ngit --no-pager diff -- \"$KUSTOMIZE_PATH\"\ngit add \"$KUSTOMIZE_PATH\"\
+      \ngit commit -m \"ci(deeptutor): promote image tag ${IMAGE_TAG}\"\ngit push\
+      \ origin HEAD:main\necho \"GitOps repo updated to tag ${IMAGE_TAG}; Argo CD\
+      \ will auto-sync.\"\n"
+    workingDir: $(workspaces.source.path)
+  workspaces:
+  - name: source
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  labels:
+    app.kubernetes.io/part-of: openwebui-cicd
+  name: git-clone
+  namespace: cicd
+spec:
+  description: Clone the application repository from GitLab into the shared workspace
+  params:
+  - description: Full http(s) URL of the repository
+    name: url
+    type: string
+  - default: main
+    name: revision
+    type: string
+  - default: source
+    name: subdirectory
+    type: string
+  - default: '1'
+    name: depth
+    type: string
+  - default: 'true'
+    name: deleteExisting
+    type: string
+  steps:
+  - computeResources: {}
+    env:
+    - name: GIT_USERNAME
+      valueFrom:
+        secretKeyRef:
+          key: username
+          name: gitlab-auth
+    - name: GIT_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          key: password
+          name: gitlab-auth
+    - name: GIT_URL
+      value: $(params.url)
+    - name: GIT_REVISION
+      value: $(params.revision)
+    - name: GIT_DEPTH
+      value: $(params.depth)
+    - name: DELETE_EXISTING
+      value: $(params.deleteExisting)
+    - name: TARGET
+      value: $(workspaces.output.path)/$(params.subdirectory)
+    image: alpine/git:v2.45.2
+    name: clone
+    script: "#!/bin/sh\nset -eu\n\nif [ \"${DELETE_EXISTING}\" = \"true\" ]; then\n\
+      \  rm -rf \"$TARGET\"\nfi\n\n# Split \"http://host[:port]/group/project.git\"\
+      \ into host and path.\nNO_SCHEME=\"${GIT_URL#*://}\"\nHOST_PART=\"${NO_SCHEME%%/*}\"\
+      \nPATH_PART=\"${NO_SCHEME#*/}\"\nAUTH_URL=\"http://${GIT_USERNAME}:${GIT_PASSWORD}@${HOST_PART}/${PATH_PART}\"\
+      \n\n# The revision may be a branch/tag OR a raw commit SHA (CI passes\n# CI_COMMIT_SHA).\
+      \ `git clone -b <sha>` only accepts branches/tags, so we\n# always shallow-clone\
+      \ the default branch (cheap) and then try to fetch\n# the exact commit on top.\n\
+      git clone --depth 1 --no-single-branch \"$AUTH_URL\" \"$TARGET\"\ncd \"$TARGET\"\
+      \n\ngit fetch --depth 1 origin \"$GIT_REVISION\" 2>/dev/null \\\n  && git checkout\
+      \ -q FETCH_HEAD \\\n  || {\n      # Not fetchable by SHA (server-side restriction):\
+      \ fall back to\n      # resolving the revision among the refs we already have.\n\
+      \      git checkout -q \"$GIT_REVISION\" 2>/dev/null \\\n        || git checkout\
+      \ -q \"origin/$GIT_REVISION\"\n    }\n\necho \"Cloned commit: $(git rev-parse\
+      \ --short HEAD) (${GIT_REVISION})\"\n"
+  workspaces:
+  - name: output
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  labels:
+    app.kubernetes.io/part-of: openwebui-cicd
+  name: update-gitops-tag
+  namespace: cicd
+spec:
+  description: 'Update the image tag in the GitOps repository and push the commit,
+    which triggers the Argo CD auto-sync that rolls the new image into the cluster.
+
+    '
+  params:
+  - description: Tag to write into overlays/prod/kustomization.yaml
+    name: image-tag
+    type: string
+  - default: overlays/prod/kustomization.yaml
+    name: kustomize-path
+    type: string
+  - default: gitops
+    name: gitops-subdir
+    type: string
+  steps:
+  - computeResources: {}
+    env:
+    - name: GIT_USERNAME
+      valueFrom:
+        secretKeyRef:
+          key: username
+          name: gitlab-auth
+    - name: GIT_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          key: password
+          name: gitlab-auth
+    - name: GITOPS_URL
+      valueFrom:
+        secretKeyRef:
+          key: gitops-url
+          name: gitlab-auth
+    - name: IMAGE_TAG
+      value: $(params.image-tag)
+    - name: KUSTOMIZE_PATH
+      value: $(params.kustomize-path)
+    - name: GITOPS_SUBDIR
+      value: $(params.gitops-subdir)
+    - name: COMMIT_MSG
+      value: 'ci(open-webui): promote image tag $(params.image-tag)'
+    image: alpine/git:v2.45.2
+    name: patch-and-commit
+    script: "#!/bin/sh\nset -eu\n\ncd \"$(workspaces.source.path)\"\nDIR=\"${GITOPS_SUBDIR}\"\
+      \n\n# Build the authenticated URL up-front; GITOPS_URL itself stays credential-free.\n\
+      NO_SCHEME=\"${GITOPS_URL#*://}\"\nHOST_PART=\"${NO_SCHEME%%/*}\"\nPATH_PART=\"\
+      ${NO_SCHEME#*/}\"\nAUTH_URL=\"http://${GIT_USERNAME}:${GIT_PASSWORD}@${HOST_PART}/${PATH_PART}\"\
+      \n\nif [ ! -d \"$DIR\" ]; then\n  git clone \"$AUTH_URL\" \"$DIR\"\nelse\n \
+      \ cd \"$DIR\"\n  git remote set-url origin \"$AUTH_URL\"\n  git pull --ff-only\
+      \ origin main\nfi\n\ncd \"$DIR\"\ngit config user.name  \"openwebui-cicd-bot\"\
+      \ngit config user.email \"openwebui-cicd-bot@users.noreply.local\"\n\n# Rewrite\
+      \ the newTag under the `images:` block of the prod overlay.\nsed -i \"s#^\\\
+      ( *newTag:\\).*#\\1 ${IMAGE_TAG}#\" \"$KUSTOMIZE_PATH\"\n\nif git diff --quiet\
+      \ -- \"$KUSTOMIZE_PATH\"; then\n  echo \"No change needed: tag already ${IMAGE_TAG}\"\
+      \n  exit 0\nfi\n\necho \"--- diff ---\"\ngit --no-pager diff -- \"$KUSTOMIZE_PATH\"\
+      \n\ngit add \"$KUSTOMIZE_PATH\"\ngit commit -m \"$COMMIT_MSG\"\ngit push origin\
+      \ HEAD:main\n\necho \"GitOps repo updated to tag ${IMAGE_TAG}; Argo CD will\
+      \ auto-sync.\"\n"
+    workingDir: $(workspaces.source.path)
+  workspaces:
+  - name: source
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: EventListener
+metadata:
+  labels:
+    app.kubernetes.io/part-of: china-study-free-cicd
+  name: china-study-free-listener
+  namespace: cicd
+spec:
+  namespaceSelector: {}
+  resources: {}
+  serviceAccountName: pipeline
+  triggers:
+  - bindings:
+    - kind: TriggerBinding
+      ref: china-study-free-binding
+    interceptors:
+    - params:
+      - name: secretRef
+        value:
+          secretKey: secretToken
+          secretName: china-study-free-webhook-secret
+      - name: eventTypes
+        value:
+        - Push Hook
+      ref:
+        kind: ClusterInterceptor
+        name: gitlab
+    - params:
+      - name: filter
+        value: body.object_kind == 'push' && body.ref == 'refs/heads/main'
+      ref:
+        kind: ClusterInterceptor
+        name: cel
+    name: gitlab-push
+    template:
+      ref: china-study-free-template
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: EventListener
+metadata:
+  labels:
+    app.kubernetes.io/part-of: compassio-cicd
+  name: compassio-listener
+  namespace: cicd
+spec:
+  namespaceSelector: {}
+  resources: {}
+  serviceAccountName: pipeline
+  triggers:
+  - bindings:
+    - kind: TriggerBinding
+      ref: compassio-binding
+    interceptors:
+    - params:
+      - name: secretRef
+        value:
+          secretKey: secretToken
+          secretName: gitlab-webhook-secret
+      - name: eventTypes
+        value:
+        - Push Hook
+      ref:
+        kind: ClusterInterceptor
+        name: gitlab
+    - params:
+      - name: filter
+        value: body.object_kind == 'push' && body.ref == 'refs/heads/main'
+      ref:
+        kind: ClusterInterceptor
+        name: cel
+    name: gitlab-push
+    template:
+      ref: compassio-template
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: EventListener
+metadata:
+  labels:
+    app.kubernetes.io/part-of: deeptutor-cicd
+  name: deeptutor-listener
+  namespace: cicd
+spec:
+  namespaceSelector: {}
+  resources: {}
+  serviceAccountName: pipeline
+  triggers:
+  - bindings:
+    - kind: TriggerBinding
+      ref: deeptutor-binding
+    interceptors:
+    - params:
+      - name: secretRef
+        value:
+          secretKey: secretToken
+          secretName: deeptutor-webhook-secret
+      - name: eventTypes
+        value:
+        - Push Hook
+      ref:
+        kind: ClusterInterceptor
+        name: gitlab
+    - params:
+      - name: filter
+        value: body.object_kind == 'push' && body.ref == 'refs/heads/main'
+      ref:
+        kind: ClusterInterceptor
+        name: cel
+    name: gitlab-push
+    template:
+      ref: deeptutor-template
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerBinding
+metadata:
+  labels:
+    app.kubernetes.io/part-of: china-study-free-cicd
+  name: china-study-free-binding
+  namespace: cicd
+spec:
+  params:
+  - name: gitrepositoryurl
+    value: $(body.repository.git_http_url)
+  - name: gitrevision
+    value: $(body.after)
+  - name: gitbefore
+    value: $(body.before)
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerBinding
+metadata:
+  labels:
+    app.kubernetes.io/part-of: compassio-cicd
+  name: compassio-binding
+  namespace: cicd
+spec:
+  params:
+  - name: gitrevision
+    value: $(body.checkout_sha)
+  - name: gitbefore
+    value: $(body.before)
+  - name: gitrepositoryurl
+    value: $(body.repository.git_http_url)
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerBinding
+metadata:
+  labels:
+    app.kubernetes.io/part-of: deeptutor-cicd
+  name: deeptutor-binding
+  namespace: cicd
+spec:
+  params:
+  - name: gitrepositoryurl
+    value: $(body.repository.git_http_url)
+  - name: gitrevision
+    value: $(body.after)
+  - name: gitbefore
+    value: $(body.before)
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  labels:
+    app.kubernetes.io/part-of: china-study-free-cicd
+  name: china-study-free-template
+  namespace: cicd
+spec:
+  params:
+  - name: gitrepositoryurl
+  - name: gitrevision
+  - name: gitbefore
+  resourcetemplates:
+  - apiVersion: tekton.dev/v1
+    kind: PipelineRun
+    metadata:
+      generateName: china-study-free-cicd-
+    spec:
+      params:
+      - name: git-url
+        value: $(tt.params.gitrepositoryurl)
+      - name: git-revision
+        value: $(tt.params.gitrevision)
+      - name: git-before
+        value: $(tt.params.gitbefore)
+      - name: image-tag
+        value: $(tt.params.gitrevision)
+      pipelineRef:
+        name: china-study-free-cicd
+      taskRunTemplate:
+        podTemplate:
+          imagePullSecrets:
+          - name: harbor-auth
+        serviceAccountName: pipeline
+      workspaces:
+      - name: shared-workspace
+        volumeClaimTemplate:
+          spec:
+            accessModes:
+            - ReadWriteOnce
+            resources:
+              requests:
+                storage: 2Gi
+            storageClassName: nfs-sc
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  labels:
+    app.kubernetes.io/part-of: compassio-cicd
+  name: compassio-template
+  namespace: cicd
+spec:
+  params:
+  - default: main
+    name: gitrevision
+  - default: ''
+    name: gitbefore
+  - name: gitrepositoryurl
+  resourcetemplates:
+  - apiVersion: tekton.dev/v1
+    kind: PipelineRun
+    metadata:
+      generateName: compassio-triggered-
+      labels:
+        app.kubernetes.io/part-of: compassio-cicd
+        compassio.cicd/commit: $(tt.params.gitrevision)
+      namespace: cicd
+    spec:
+      params:
+      - name: git-url
+        value: $(tt.params.gitrepositoryurl)
+      - name: git-revision
+        value: $(tt.params.gitrevision)
+      - name: git-before
+        value: $(tt.params.gitbefore)
+      - name: image-tag
+        value: $(tt.params.gitrevision)
+      pipelineRef:
+        name: compassio-cicd
+      taskRunTemplate:
+        podTemplate:
+          imagePullSecrets:
+          - name: harbor-auth
+          nodeSelector:
+            kubernetes.io/hostname: worker03
+          tolerations:
+          - key: node-role.kubernetes.io/control-plane
+            operator: Exists
+        serviceAccountName: pipeline
+      workspaces:
+      - name: shared-workspace
+        volumeClaimTemplate:
+          spec:
+            accessModes:
+            - ReadWriteOnce
+            resources:
+              requests:
+                storage: 256Mi
+            storageClassName: nfs-sc
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  labels:
+    app.kubernetes.io/part-of: deeptutor-cicd
+  name: deeptutor-template
+  namespace: cicd
+spec:
+  params:
+  - name: gitrepositoryurl
+  - name: gitrevision
+  - name: gitbefore
+  resourcetemplates:
+  - apiVersion: tekton.dev/v1
+    kind: PipelineRun
+    metadata:
+      generateName: deeptutor-cicd-
+    spec:
+      params:
+      - name: git-url
+        value: $(tt.params.gitrepositoryurl)
+      - name: git-revision
+        value: $(tt.params.gitrevision)
+      - name: git-before
+        value: $(tt.params.gitbefore)
+      - name: image-tag
+        value: $(tt.params.gitrevision)
+      pipelineRef:
+        name: deeptutor-cicd
+      taskRunTemplate:
+        podTemplate:
+          imagePullSecrets:
+          - name: harbor-auth
+        serviceAccountName: pipeline
+      workspaces:
+      - name: shared-workspace
+        volumeClaimTemplate:
+          spec:
+            accessModes:
+            - ReadWriteOnce
+            resources:
+              requests:
+                storage: 2Gi
+            storageClassName: nfs-sc

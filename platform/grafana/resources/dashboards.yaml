@@ -1,0 +1,554 @@
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-calico-felix-dashboard-calico-felix-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: calico-felix-dashboard
+    key: calico-felix.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-alertmanager-overview-alertmanager-overview-jso
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-alertmanager-overview
+    key: alertmanager-overview.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-apiserver-apiserver-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-apiserver
+    key: apiserver.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-cluster-total-cluster-total-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-cluster-total
+    key: cluster-total.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-controller-manager-controller-manager-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-controller-manager
+    key: controller-manager.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-etcd-etcd-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-etcd
+    key: etcd.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-grafana-dashboard-apps-argocd-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-grafana-dashboard-apps
+    key: argocd.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-grafana-dashboard-apps-cert-manager-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-grafana-dashboard-apps
+    key: cert-manager.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-grafana-dashboard-apps-cnpg-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-grafana-dashboard-apps
+    key: cnpg.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-grafana-dashboard-apps-knative-eventing-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-grafana-dashboard-apps
+    key: knative-eventing.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-grafana-dashboard-apps-metallb-cephcsi-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-grafana-dashboard-apps
+    key: metallb-cephcsi.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-grafana-dashboard-apps-strimzi-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-grafana-dashboard-apps
+    key: strimzi.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-grafana-dashboard-apps-tekton-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-grafana-dashboard-apps
+    key: tekton.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-grafana-dashboard-apps-traefik-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-grafana-dashboard-apps
+    key: traefik.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-grafana-overview-grafana-overview-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-grafana-overview
+    key: grafana-overview.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-k8s-coredns-k8s-coredns-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-k8s-coredns
+    key: k8s-coredns.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-k8s-resources-cluster-k8s-resources-cluster-jso
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-k8s-resources-cluster
+    key: k8s-resources-cluster.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-k8s-resources-multicluster-k8s-resources-multic
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-k8s-resources-multicluster
+    key: k8s-resources-multicluster.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-k8s-resources-namespace-k8s-resources-namespace
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-k8s-resources-namespace
+    key: k8s-resources-namespace.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-k8s-resources-node-k8s-resources-node-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-k8s-resources-node
+    key: k8s-resources-node.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-k8s-resources-pod-k8s-resources-pod-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-k8s-resources-pod
+    key: k8s-resources-pod.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-k8s-resources-workload-k8s-resources-workload-j
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-k8s-resources-workload
+    key: k8s-resources-workload.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-k8s-resources-workloads-namespace-k8s-resources
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-k8s-resources-workloads-namespace
+    key: k8s-resources-workloads-namespace.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-kubelet-kubelet-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-kubelet
+    key: kubelet.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-namespace-by-pod-namespace-by-pod-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-namespace-by-pod
+    key: namespace-by-pod.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-namespace-by-workload-namespace-by-workload-jso
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-namespace-by-workload
+    key: namespace-by-workload.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-node-cluster-rsrc-use-node-cluster-rsrc-use-jso
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-node-cluster-rsrc-use
+    key: node-cluster-rsrc-use.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-node-rsrc-use-node-rsrc-use-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-node-rsrc-use
+    key: node-rsrc-use.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-nodes-nodes-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-nodes
+    key: nodes.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-nodes-aix-nodes-aix-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-nodes-aix
+    key: nodes-aix.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-nodes-darwin-nodes-darwin-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-nodes-darwin
+    key: nodes-darwin.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-persistentvolumesusage-persistentvolumesusage-j
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-persistentvolumesusage
+    key: persistentvolumesusage.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-pod-total-pod-total-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-pod-total
+    key: pod-total.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-prometheus-prometheus-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-prometheus
+    key: prometheus.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-proxy-proxy-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-proxy
+    key: proxy.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-scheduler-scheduler-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-scheduler
+    key: scheduler.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: dash-prometheus-workload-total-workload-total-json
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: grafana-dashboards
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: prometheus-grafana
+  configMapRef:
+    name: prometheus-workload-total
+    key: workload-total.json

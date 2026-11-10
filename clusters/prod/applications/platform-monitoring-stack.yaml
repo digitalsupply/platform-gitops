@@ -1,0 +1,63 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-monitoring-stack
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "10"
+spec:
+  project: default
+  sources:
+    # values.yaml 所在的 Git 仓库，仅作为 valueFiles 的引用源（ref source 放第一位）
+    - repoURL: http://192.168.67.201/digitalsupply/platform-gitops.git
+      targetRevision: main
+      ref: values
+    # kube-prometheus-stack chart（固定版本）
+    - repoURL: https://prometheus-community.github.io/helm-charts
+      chart: kube-prometheus-stack
+      targetRevision: 83.7.0
+      helm:
+        releaseName: prometheus
+        skipCrds: true
+        valueFiles:
+          - $values/platform/monitoring/values.yaml
+    # Grafana admin 等辅助 Secret
+    - repoURL: http://192.168.67.201/digitalsupply/platform-gitops.git
+      targetRevision: main
+      path: platform/monitoring/stack
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  ignoreDifferences:
+    - group: bitnami.com
+      kind: SealedSecret
+      jsonPointers:
+        - /status
+    # Service 的 clusterIP 由 API Server 分配
+    - group: ""
+      kind: Service
+      jsonPointers:
+        - /spec/clusterIP
+        - /spec/clusterIPs
+        - /spec/ipFamilies
+        - /spec/ipFamilyPolicy
+        - /spec/healthCheckNodePort
+    # Operator 写入的校验注解
+    - group: monitoring.coreos.com
+      kind: PrometheusRule
+      jsonPointers:
+        - /metadata/annotations/prometheus-operator-validated
+  syncPolicy:
+    automated:
+      # 不开启 prune：chart 资源多，避免误删 operator 生成的资源
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m

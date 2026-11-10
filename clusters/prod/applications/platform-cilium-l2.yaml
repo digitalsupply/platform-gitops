@@ -1,0 +1,42 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-cilium-l2
+  namespace: argocd
+  annotations:
+    # Applied after platform-metallb (wave -5) so the MetalLB speaker is already
+    # disabled when Cilium starts answering ARP for 10.0.0.252.
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: http://192.168.67.201/digitalsupply/platform-gitops.git
+    targetRevision: main
+    # Only the CR lives here. Cilium Helm values are in
+    # platform/network/cilium/values.yaml and are applied by the manual Helm
+    # upgrade (same pattern as platform/monitoring).
+    path: platform/network/cilium/l2-policy
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  ignoreDifferences:
+    - group: cilium.io
+      kind: CiliumL2AnnouncementPolicy
+      jsonPointers:
+        - /status
+  syncPolicy:
+    automated:
+      # Deleting the policy while the MetalLB speaker is disabled would make the
+      # VIP disappear. Keep prune off and make removal an explicit operation.
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - SkipDryRunOnMissingResource=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m

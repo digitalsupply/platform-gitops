@@ -1,0 +1,43 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-cicd
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "20"
+spec:
+  project: default
+  source:
+    repoURL: http://192.168.67.201/digitalsupply/platform-gitops.git
+    targetRevision: main
+    path: platform/cicd
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cicd
+  ignoreDifferences:
+    - group: triggers.tekton.dev
+      kind: EventListener
+      jsonPointers:
+        - /status
+    - group: tekton.dev
+      kind: Pipeline
+      jsonPointers:
+        - /status
+    - group: tekton.dev
+      kind: Task
+      jsonPointers:
+        - /status
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - SkipDryRunOnMissingResource=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m

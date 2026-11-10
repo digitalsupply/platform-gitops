@@ -1,0 +1,16 @@
+# Disable the MetalLB speaker while keeping the DaemonSet (and its history)
+# so that removing this patch restores L2 announcement from MetalLB.
+#
+# The label does not exist on any node, therefore the DaemonSet schedules zero
+# Pods. MetalLB controller keeps running and keeps doing LB IPAM.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: speaker
+  namespace: metallb-system
+spec:
+  template:
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+        metallb.io/announcer-disabled: "true"

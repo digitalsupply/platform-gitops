@@ -1,0 +1,43 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-kafka-cluster
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: http://192.168.67.201/digitalsupply/platform-gitops.git
+    targetRevision: main
+    path: platform/kafka/cluster
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kafka
+  ignoreDifferences:
+    - group: kafka.strimzi.io
+      kind: Kafka
+      jsonPointers:
+        - /status
+    - group: kafka.strimzi.io
+      kind: KafkaNodePool
+      jsonPointers:
+        - /status
+    - group: kafka.strimzi.io
+      kind: KafkaTopic
+      jsonPointers:
+        - /status
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - SkipDryRunOnMissingResource=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m

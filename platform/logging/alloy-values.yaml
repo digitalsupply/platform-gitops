@@ -1,0 +1,76 @@
+# Grafana Alloy Helm values (source of truth for the `alloy` release in logging)
+#
+# Alloy is a DaemonSet that tails node-local pod logs from /var/log/pods and
+# pushes them to the Loki gateway. It does NOT scrape metrics and does NOT
+# collect Kubernetes events.
+#
+# The Alloy config itself is managed separately in GitOps:
+#   platform/logging/alloy/alloy-config.yaml  -> ConfigMap alloy-config
+#   ArgoCD Application platform-alloy-config
+#
+# Upgrade (manual, same pattern as the Loki release):
+#   helm -n logging upgrade alloy /root/.cache/helm/repository/alloy-1.13.0.tgz \
+#     --reuse-values -f platform/logging/alloy-values.yaml
+#
+# 2026-11-09: lowered requests/limits. Actual usage is 63-101Mi and 8-27m CPU;
+# the previous 128Mi request / 512Mi limit over-reserved and left little
+# scheduling room on the 4GiB control-plane nodes.
+alloy:
+  configMap:
+    create: false
+    key: config.alloy
+    name: alloy-config
+  mounts:
+    dockercontainers: true
+    extra:
+      - mountPath: /run/alloy
+        name: positions
+    varlog: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+  storagePath: /run/alloy
+
+configReloader:
+  resources:
+    requests:
+      cpu: 5m
+      memory: 32Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+
+controller:
+  tolerations:
+    - effect: NoSchedule
+      operator: Exists
+  type: daemonset
+  updateStrategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+    type: RollingUpdate
+  volumes:
+    extra:
+      - hostPath:
+          path: /run/alloy
+          type: DirectoryOrCreate
+        name: positions
+
+rbac:
+  create: true
+
+service:
+  enabled: true
+  type: ClusterIP
+
+serviceAccount:
+  create: true
+  name: alloy
+
+serviceMonitor:
+  enabled: false

@@ -1,0 +1,72 @@
+# Loki Helm values (source of truth for the `loki` release in namespace logging)
+#
+# The release is upgraded manually (same pattern as platform/monitoring):
+#
+#   helm -n logging upgrade loki /root/.cache/helm/repository/loki-6.55.0.tgz \
+#     --reuse-values -f platform/logging/values.yaml
+#
+# `--reuse-values` is required: the S3 credentials and other values that are
+# intentionally not committed to Git live only in the Helm release.
+#
+# 2026-11-09 changes:
+#   1. Gateway resolver pinned to the kube-dns ClusterIP with a short validity.
+#      The default `kube-dns.kube-system.svc.cluster.local.` left nginx worker
+#      processes with stale UDP resolver state after a CNI/conntrack transition;
+#      every /loki/api/v1/* request then failed with
+#      "could not be resolved (110: Operation timed out)" -> 502.
+#   2. Gateway liveness probe now exercises a real Loki read path, so a broken
+#      resolver (or a dead read path) self-heals by restarting the gateway.
+#   3. Codify the memcached sizes that were previously patched by hand. The
+#      chart defaults (8192/1024 MiB) exceed the container limits and caused
+#      OOMKills; a future Helm upgrade would have reintroduced them.
+
+# Retention settings that existed only in the live ConfigMap were captured here
+# so that the next `helm upgrade` does not silently reset them.
+loki:
+  compactor:
+    working_directory: /var/loki/compactor
+    compaction_interval: 10m
+    retention_enabled: true
+    retention_delete_delay: 2h
+    retention_delete_worker_count: 150
+    delete_request_store: s3
+  limits_config:
+    retention_period: 120h
+    max_query_lookback: 120h
+    reject_old_samples_max_age: 120h
+
+gateway:
+  nginxConfig:
+    resolver: "10.96.0.10 valid=10s"
+  livenessProbe:
+    httpGet:
+      path: /loki/api/v1/labels
+      port: http-metrics
+      httpHeaders:
+        - name: X-Scope-OrgID
+          value: fake
+    initialDelaySeconds: 60
+    periodSeconds: 60
+    timeoutSeconds: 10
+    successThreshold: 1
+    failureThreshold: 5
+
+chunksCache:
+  # ~70% of the 1Gi container limit, so memcached evicts before the kernel OOMs it
+  allocatedMemory: 700
+  resources:
+    limits:
+      memory: 1Gi
+    requests:
+      cpu: 100m
+      memory: 512Mi
+
+resultsCache:
+  # ~70% of the 512Mi container limit
+  allocatedMemory: 350
+  resources:
+    limits:
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi

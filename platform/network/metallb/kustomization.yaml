@@ -1,0 +1,24 @@
+# MetalLB: controller-only (LB IPAM), speaker disabled
+#
+# This directory is the GitOps source of truth for the `metallb-system`
+# resources that are still in use. The speaker DaemonSet is intentionally kept
+# in the manifest but pinned to a label that no node has, so it reconciles to
+# zero Pods. That makes the "speaker disabled" state self-healing instead of a
+# one-off manual patch.
+#
+# Rollback to MetalLB speaker L2 announcement:
+#   1. Delete/disable platform-cilium-l2 (so Cilium stops announcing 10.0.0.252)
+#   2. Remove the `metallb.io/announcer-disabled` entry from
+#      speaker-disabled-patch.yaml (or delete the patch from kustomization.yaml)
+#   3. Commit/push and let ArgoCD sync (or run argocd app sync platform-metallb)
+#
+# Do NOT run the MetalLB speaker and Cilium L2 for the same VIP at the same time.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - metallb-native.yaml
+  - pools.yaml
+
+patches:
+  - path: speaker-disabled-patch.yaml

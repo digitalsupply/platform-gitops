@@ -1,0 +1,42 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  labels:
+    app.kubernetes.io/part-of: platform
+  name: platform-ceph-csi-drivers
+  namespace: argocd
+spec:
+  destination:
+    namespace: ceph-csi-rbd
+    server: https://kubernetes.default.svc
+  project: default
+  sources:
+    # Ceph-CSI Operator driver chart: Driver + CephConnection + ClientProfile + RBAC
+    - repoURL: https://ceph.github.io/ceph-csi-operator
+      chart: ceph-csi-drivers
+      targetRevision: 1.1.0
+      helm:
+        releaseName: ceph-csi-drivers
+        valueFiles:
+          - $values/platform/ceph-csi/drivers-values.yaml
+    # Values source
+    - repoURL: http://192.168.67.201/digitalsupply/platform-gitops.git
+      targetRevision: main
+      ref: values
+    # Image set ConfigMap for x86-64-v2 (rocky9) plugin image
+    - repoURL: http://192.168.67.201/digitalsupply/platform-gitops.git
+      targetRevision: main
+      path: platform/ceph-csi/drivers-resources
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+      limit: 5
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

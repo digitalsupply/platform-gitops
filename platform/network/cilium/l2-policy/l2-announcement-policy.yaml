@@ -1,0 +1,37 @@
+# Cilium L2 Announcement Policy for the Traefik LoadBalancer VIP 10.0.0.252.
+#
+# Responsibility split:
+#   - MetalLB controller: allocates the LB IP and writes status.loadBalancer.ingress
+#   - Cilium agent: replies to ARP/NDP for that IP (this policy)
+#
+# Requirements (already satisfied by the Cilium release):
+#   - kubeProxyReplacement=true
+#   - l2announcements.enabled=true
+#   - the announced interface must be in `devices` (eth0)
+#
+# Service must have loadBalancerClass unset or io.cilium/l2-announcer.
+# Traefik has no loadBalancerClass, so it matches.
+#
+# Limitations:
+#   - incompatible with externalTrafficPolicy: Local (Traefik uses Cluster)
+#   - one node answers ARP per VIP; failover is Lease based (10-20s by default)
+apiVersion: cilium.io/v2alpha1
+kind: CiliumL2AnnouncementPolicy
+metadata:
+  name: traefik-l2
+spec:
+  # All worker nodes are candidates. The first node to acquire the Lease keeps
+  # it, so the current holder (worker03) does not change on policy edits.
+  nodeSelector:
+    matchExpressions:
+      - key: node-role.kubernetes.io/control-plane
+        operator: DoesNotExist
+  interfaces:
+    - ^eth0$
+  loadBalancerIPs: true
+  externalIPs: false
+  # io.kubernetes.service.namespace is a Cilium reserved selector, it matches
+  # the Service namespace without requiring a real label on the Service.
+  serviceSelector:
+    matchLabels:
+      io.kubernetes.service.namespace: traefik

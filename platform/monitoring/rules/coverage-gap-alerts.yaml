@@ -1,0 +1,106 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    release: prometheus
+  name: coverage-gap-alerts
+  namespace: monitoring
+spec:
+  groups:
+  - name: logging-pipeline.rules
+    rules:
+    - alert: AlloyDown
+      annotations:
+        description: Alloy 是日志链路入口，该 Pod 不可用会导致日志静默丢失
+        summary: 'Alloy 日志采集 Pod 不可用: {{ $labels.pod }}'
+      expr: count by (pod) (up{namespace="logging",job=~"alloy"} == 0) or (absent(up{namespace="logging",job=~"alloy"}) and
+        vector(1))
+      for: 5m
+      labels:
+        severity: critical
+    - alert: AlloyDesiredCountMismatch
+      annotations:
+        description: 部分节点的日志未被采集。当前 desired=6 / ready=6，正常时应为 0
+        summary: Alloy 未覆盖全部节点（就绪 {{ $value }} 个未就绪）
+      expr: sum(kube_daemonset_status_desired_number_scheduled{namespace="logging",daemonset=~"alloy.*"}) - sum(kube_daemonset_status_number_ready{namespace="logging",daemonset=~"alloy.*"})
+        > 0
+      for: 10m
+      labels:
+        severity: critical
+    - alert: LokiIngestStalled
+      annotations:
+        description: Loki write/backend/read 链路中断，日志将无法写入或查询。注：2026-10-07 修复——原规则 job=~"loki-write|..." 与实际 job 名("logging/loki-write"
+          带命名空间前缀)不匹配，absent() 恒真导致长期误报。
+        summary: Loki 组件不可用
+      expr: absent(up{namespace="logging",job=~"logging/loki-write|logging/loki-backend|logging/loki-read"}) or sum(up{namespace="logging",job=~"logging/loki-write|logging/loki-backend|logging/loki-read"}
+        == 0) > 0
+      for: 5m
+      labels:
+        severity: critical
+  - name: cni.rules
+    rules:
+    - alert: CalicoNodeNotReady
+      annotations:
+        description: CNI 异常会导致该节点网络不可用，Pod 无法调度/通信
+        summary: 'Calico CNI Pod 未就绪: {{ $labels.pod }}'
+      expr: sum by (pod) (kube_pod_status_ready{namespace="kube-system",pod=~"calico-node-.*",condition="true"}) < 1
+      for: 5m
+      labels:
+        severity: critical
+    - alert: CalicoKubeControllersDown
+      annotations:
+        description: 控制器异常会影响网络策略下发与 IP 回收。注意：该 Pod 无独立 metrics target（无 ServiceMonitor/PodMonitor），因此改用 kube-state-metrics
+          的 kube_pod_status_ready 判定
+        summary: calico-kube-controllers 未就绪
+      expr: sum(kube_pod_status_ready{namespace="kube-system",pod=~"calico-kube-controllers-.*",condition="true"}) < 1
+      for: 5m
+      labels:
+        severity: warning
+  - name: loadbalancer.rules
+    rules:
+    - alert: MetalLBSpeakerHighRestart
+      annotations:
+        summary: 'MetalLB speaker 高频重启: {{ $labels.pod }}'
+      expr: sum by (pod) (increase(kube_pod_container_status_restarts_total{namespace="metallb-system",pod=~"speaker-.*"}[1h]))
+        > 3
+      for: 15m
+      labels:
+        severity: warning
+  - name: gitops.rules
+    rules:
+    - alert: ArgoCDRepoServerDown
+      annotations:
+        description: GitOps 同步会阻塞，集群期望状态无法自动收敛
+        summary: ArgoCD repo-server 不可用
+      expr: min(up{namespace="argocd",pod=~"argocd-repo-server-.*"}) == 0 or absent(up{namespace="argocd",pod=~"argocd-repo-server-.*"})
+      for: 5m
+      labels:
+        severity: critical
+    - alert: ArgoCDHighRestart
+      annotations:
+        description: argocd 命名空间内 pod 最近15分钟重启超过3次。注：2026-10-07 窗口由1h改为15m，统一窗口化increase语义，消除实例替换(计数器断链)产生的长时间误报残留。
+        summary: 'ArgoCD 组件高频重启: {{ $labels.pod }}'
+      expr: sum by (pod) (increase(kube_pod_container_status_restarts_total{namespace="argocd"}[15m])) > 3
+      for: 15m
+      labels:
+        severity: warning
+  - name: default-workloads.rules
+    rules:
+    - alert: DefaultNSDeploymentUnavailable
+      annotations:
+        description: 可用副本数低于期望，可能伴随探针失败（如 report-processor 的 503）
+        summary: 'default ns 副本不足: {{ $labels.deployment }} ({{ $labels.namespace }})'
+      expr: "sum by (namespace, deployment) (\n  kube_deployment_status_replicas_available{namespace=\"default\"}\n  < kube_deployment_spec_replicas{namespace=\"\
+        default\"}\n) > 0"
+      for: 10m
+      labels:
+        severity: warning
+    - alert: DefaultNSProbeFailing
+      annotations:
+        description: 容器处于 CrashLoopBackOff 或镜像拉取失败状态
+        summary: 'default ns 容器异常: {{ $labels.pod }}/{{ $labels.container }}'
+      expr: "count by (pod, container) (\n  kube_pod_container_status_waiting_reason{namespace=\"default\",reason=~\"CrashLoopBackOff|ImagePullBackOff|ErrImagePull\"\
+        }\n) > 0"
+      for: 10m
+      labels:
+        severity: warning

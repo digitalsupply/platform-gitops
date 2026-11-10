@@ -1,0 +1,168 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-config
+  namespace: logging
+  labels:
+    app.kubernetes.io/name: alloy
+    app.kubernetes.io/instance: alloy
+data:
+  config.alloy: |
+    // =============================================================================
+    // Grafana Alloy v1.20.0 — Kubernetes Pod 日志采集
+    // 基线来源：Promtail 3.5.1 原配置（备份 /root/observability-upgrade-backup-20260928-122529）
+    // 转换方式：grafana/alloy 内置 `alloy convert` + 人工复刻 Promtail 标签契约
+    // 契约保证：node_name / job / app / instance / component / pod / container
+    //            + /var/log/pods 路径双规则（uid 形式 + config.hash 注解形式）
+    // =============================================================================
+
+    // ---------- 1. 服务发现：只看本节点的 Pod ----------
+    discovery.kubernetes "pod_logs" {
+    	role = "pod"
+
+    	selectors {
+    		role  = "pod"
+    		field = "spec.nodeName=" + coalesce(sys.env("K8S_NODE_NAME"), constants.hostname)
+    	}
+    }
+
+    // ---------- 2. 标签重写：1:1 复刻 Promtail 的 relabel_configs ----------
+    discovery.relabel "pod_logs" {
+    	targets = discovery.kubernetes.pod_logs.targets
+
+    	// app：4 级回退（name label → app label → controller name → pod name）
+    	rule {
+    		source_labels = ["__meta_kubernetes_pod_controller_name"]
+    		regex         = "([0-9a-z-.]+?)(-[0-9a-f]{8,10})?"
+    		target_label  = "__tmp_controller_name"
+    	}
+
+    	rule {
+    		source_labels = [
+    			"__meta_kubernetes_pod_label_app_kubernetes_io_name",
+    			"__meta_kubernetes_pod_label_app",
+    			"__tmp_controller_name",
+    			"__meta_kubernetes_pod_name",
+    		]
+    		regex        = "^;*([^;]+)(;.*)?$"
+    		target_label = "app"
+    	}
+
+    	// instance
+    	rule {
+    		source_labels = [
+    			"__meta_kubernetes_pod_label_app_kubernetes_io_instance",
+    			"__meta_kubernetes_pod_label_instance",
+    		]
+    		regex        = "^;*([^;]+)(;.*)?$"
+    		target_label = "instance"
+    	}
+
+    	// component
+    	rule {
+    		source_labels = [
+    			"__meta_kubernetes_pod_label_app_kubernetes_io_component",
+    			"__meta_kubernetes_pod_label_component",
+    		]
+    		regex        = "^;*([^;]+)(;.*)?$"
+    		target_label = "component"
+    	}
+
+    	// node_name（★ 存量 LogQL 依赖此标签名，不是 node）
+    	rule {
+    		source_labels = ["__meta_kubernetes_pod_node_name"]
+    		target_label  = "node_name"
+    	}
+
+    	rule {
+    		source_labels = ["__meta_kubernetes_namespace"]
+    		target_label  = "namespace"
+    	}
+
+    	// job = "<namespace>/<app>"
+    	rule {
+    		source_labels = ["namespace", "app"]
+    		separator     = "/"
+    		target_label  = "job"
+    	}
+
+    	rule {
+    		source_labels = ["__meta_kubernetes_pod_name"]
+    		target_label  = "pod"
+    	}
+
+    	rule {
+    		source_labels = ["__meta_kubernetes_pod_container_name"]
+    		target_label  = "container"
+    	}
+
+    	// __path__：与 Promtail 原配置 1:1 复刻的两条规则
+    	//   A = uid 形式（绝大多数 Pod）
+    	//   B = config.hash 注解形式（兼容老式 Deployment）
+    	// 说明：discovery.kubernetes(role="pod") 不会产出 __path__，必须自己拼。
+    	// glob 展开由下方 loki.source.file 的 file_match 块负责（见该块注释）。
+
+    	// __path__ 规则 A：uid 形式（绝大多数 Pod）
+    	rule {
+    		source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+    		separator     = "/"
+    		replacement   = "/var/log/pods/*$1/*.log"
+    		target_label  = "__path__"
+    	}
+
+    	// __path__ 规则 B：config.hash 注解形式（兼容老式 Deployment）
+    	rule {
+    		source_labels = [
+    			"__meta_kubernetes_pod_annotationpresent_kubernetes_io_config_hash",
+    			"__meta_kubernetes_pod_annotation_kubernetes_io_config_hash",
+    			"__meta_kubernetes_pod_container_name",
+    		]
+    		separator    = "/"
+    		regex        = "true/(.*)"
+    		replacement  = "/var/log/pods/*$1/*.log"
+    		target_label = "__path__"
+    	}
+    }
+
+    // ---------- 3. 日志读取源（★ 迁移时完全缺失的一环）----------
+    loki.source.file "pod_logs" {
+    	targets    = discovery.relabel.pod_logs.output
+    	forward_to = [loki.process.logs_to_prometheus.receiver]
+
+    	// 从文件末尾开始追：避免把 Promtail 时代遗留的最多 7 天历史日志
+    	// 一次性重放进 Loki（会被 reject_old_samples / out-of-order 大面积拒绝，
+    	// 且会打爆 gateway 与 WAL）。代价是迁移窗口（约 4h）的日志不回填。
+    	tail_from_end = true
+
+    	// ★ 关键：loki.source.file 默认要求 targets.__path__ 是「具体文件路径」，
+    	//   遇到 glob 会对字面量直接 os.Stat 而不展开（实测 65 个 target 全部
+    	//   stat .../*.log: no such file or directory）。开启 file_match 后改由
+    	//   doublestar 库做通配符发现，并按 sync_period 自动感知文件轮转新增。
+    	file_match {
+    		enabled     = true
+    		sync_period = "10s"
+    	}
+    }
+
+    // ---------- 4. 解析管道（对齐 Promtail pipeline_stages）----------
+    loki.process "logs_to_prometheus" {
+    	forward_to = [loki.write.default.receiver]
+
+    	// 剥离 CRI 包装：timestamp / stream / P | F
+    	stage.cri { }
+
+    	// 与 Loki retention_period 对齐：5d = 120h
+    	stage.drop {
+    		// 与 Loki 保留窗口对齐（5d = 120h）。改动前是 168h，比 Loki 的
+    		// retention_period 长，导致采集端还在读 Loki 早已删除的日志。
+    		older_than = "120h"
+    	}
+    }
+
+    // ---------- 5. 写出（端点与租户与 Promtail 时代完全一致）----------
+    loki.write "default" {
+    	endpoint {
+    		url       = "http://loki-gateway.logging.svc.cluster.local/loki/api/v1/push"
+    		tenant_id = "fake"
+    	}
+    }

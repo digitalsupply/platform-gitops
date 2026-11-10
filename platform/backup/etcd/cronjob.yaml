@@ -1,0 +1,182 @@
+# Hourly etcd snapshot, uploaded to Ceph RGW (S3).
+#
+# Primary store : s3://etcd-backups/  (Ceph RGW, http://10.0.0.31:7480)
+# Local staging : m01:/var/backups/etcd (24h hourly + 7 daily)
+#
+# Why this design:
+#   - etcd only listens on the host network, and the PKI lives on
+#     control-plane nodes, so the job is pinned to m01;
+#   - the Ceph RBD CSI node plugin only runs on worker nodes, so a
+#     ceph-rbd-sc PVC cannot be mounted here;
+#   - Ceph RGW is already the S3 backend for Loki/CNPG, and object storage
+#     is the right target for etcd snapshots (off-node, lifecycle rules).
+#
+# The host's /usr/bin/aws and /usr/local/bin/etcdctl are executed through a
+# read-only chroot of the host root. Only CAP_SYS_CHROOT is added.
+#
+# Required Secret (not in Git): etcd-backup/etcd-backup-s3
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+#
+# Bucket lifecycle (already configured):
+#   hourly/ expires after 30d, daily/ expires after 90d.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etcd-snapshot
+  namespace: etcd-backup
+  labels:
+    app.kubernetes.io/name: etcd-snapshot
+    app.kubernetes.io/part-of: cluster-backup
+spec:
+  schedule: "5 * * * *"          # hourly at :05 Asia/Shanghai
+  timeZone: "Asia/Shanghai"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 900
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: etcd-snapshot
+        spec:
+          restartPolicy: OnFailure
+          automountServiceAccountToken: false
+          nodeSelector:
+            kubernetes.io/hostname: m01
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+          hostNetwork: true
+          dnsPolicy: Default
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+          containers:
+            - name: snapshot
+              image: docker.io/library/busybox:1.37
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  # busybox has no tzdata; POSIX TZ keeps filenames in UTC+8
+                  export TZ=CST-8
+                  export HOME=/tmp
+                  TS="$(date +%Y%m%d-%H%M)"
+                  OUT="/backup/hourly/etcd-${TS}.db"
+                  mkdir -p /backup/hourly /backup/daily
+
+                  /usr/local/bin/etcdctl \
+                    --endpoints=https://127.0.0.1:2379 \
+                    --cacert=/etc/etcd/ca.crt \
+                    --cert=/etc/etcd/healthcheck-client.crt \
+                    --key=/etc/etcd/healthcheck-client.key \
+                    snapshot save "${OUT}"
+
+                  /usr/local/bin/etcdctl --write-out=table snapshot status "${OUT}"
+
+                  # durable copy: Ceph RGW (S3)
+                  chroot /host /usr/bin/aws --endpoint-url "${S3_ENDPOINT}" \
+                    s3 cp "/var/backups/etcd/hourly/etcd-${TS}.db" \
+                    "s3://${S3_BUCKET}/hourly/etcd-${TS}.db"
+
+                  # keep one snapshot per day
+                  if [ "$(date +%H)" = "00" ]; then
+                    cp "${OUT}" "/backup/daily/etcd-$(date +%Y%m%d).db"
+                    chroot /host /usr/bin/aws --endpoint-url "${S3_ENDPOINT}" \
+                      s3 cp "/var/backups/etcd/daily/etcd-$(date +%Y%m%d).db" \
+                      "s3://${S3_BUCKET}/daily/etcd-$(date +%Y%m%d).db"
+                  fi
+
+                  # local staging retention (~24 hourly + 7 daily)
+                  find /backup/hourly -name 'etcd-*.db' -mmin +1560 -delete
+                  find /backup/daily  -name 'etcd-*.db' -mtime +7 -delete
+
+                  echo "snapshot + upload ok: ${OUT}"
+              env:
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: etcd-backup-s3
+                      key: AWS_ACCESS_KEY_ID
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: etcd-backup-s3
+                      key: AWS_SECRET_ACCESS_KEY
+                - name: AWS_DEFAULT_REGION
+                  value: us-east-1
+                - name: AWS_EC2_METADATA_DISABLED
+                  value: "true"
+                - name: S3_ENDPOINT
+                  value: http://10.0.0.31:7480
+                - name: S3_BUCKET
+                  value: etcd-backups
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+                  add: ["SYS_CHROOT"]
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                - name: etcd-ca
+                  mountPath: /etc/etcd/ca.crt
+                  readOnly: true
+                - name: etcd-client-cert
+                  mountPath: /etc/etcd/healthcheck-client.crt
+                  readOnly: true
+                - name: etcd-client-key
+                  mountPath: /etc/etcd/healthcheck-client.key
+                  readOnly: true
+                - name: etcdctl
+                  mountPath: /usr/local/bin/etcdctl
+                  readOnly: true
+                - name: host-root
+                  mountPath: /host
+                  readOnly: true
+                - name: host-tmp
+                  mountPath: /host/tmp
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: backup
+              hostPath:
+                path: /var/backups/etcd
+                type: DirectoryOrCreate
+            - name: etcd-ca
+              hostPath:
+                path: /etc/kubernetes/pki/etcd/ca.crt
+                type: File
+            - name: etcd-client-cert
+              hostPath:
+                path: /etc/kubernetes/pki/etcd/healthcheck-client.crt
+                type: File
+            - name: etcd-client-key
+              hostPath:
+                path: /etc/kubernetes/pki/etcd/healthcheck-client.key
+                type: File
+            - name: etcdctl
+              hostPath:
+                path: /usr/local/bin/etcdctl
+                type: File
+            - name: host-root
+              hostPath:
+                path: /
+                type: Directory
+            - name: host-tmp
+              emptyDir: {}
+            - name: tmp
+              emptyDir: {}

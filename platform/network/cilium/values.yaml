@@ -1,0 +1,69 @@
+# Cilium Helm values (source of truth for the `cilium` release in kube-system)
+#
+# Cilium is upgraded manually (like platform/monitoring) because a CNI upgrade
+# needs preflight and node-by-node care. This file is the input for:
+#
+#   helm -n kube-system upgrade cilium oci://quay.io/cilium/charts/cilium \
+#     --version 1.20.4 --skip-crds --reuse-values -f platform/network/cilium/values.yaml
+#
+# `--reuse-values` keeps values that are intentionally not in Git (none today),
+# matching the monitoring workflow.
+#
+# 2026-11-09: enabled L2 Announcements. MetalLB controller keeps doing LB IPAM;
+# the MetalLB speaker was removed (see platform/network/metallb).
+autoDirectNodeRoutes: true
+bpf:
+  hostLegacyRouting: false
+  masquerade: true
+cluster:
+  name: home
+# Keep Cilium LB IPAM off: MetalLB still owns LB IP allocation.
+defaultLBServiceIPAM: none
+# Only eth0 is announced. eth1 (172.16.1.0/16) is internal and no LB Service
+# uses the lb-pool-eth1 range, so it is deliberately not added.
+devices: eth0
+enableLBIPAM: false
+hubble:
+  enabled: true
+  metrics:
+    enabled:
+    - drop
+    - tcp
+    - flow
+    serviceMonitor:
+      enabled: true
+      labels:
+        release: prometheus
+      trustCRDsExist: true
+  relay:
+    enabled: true
+  ui:
+    enabled: true
+ipam:
+  mode: kubernetes
+ipv4NativeRoutingCIDR: 10.244.0.0/16
+k8s:
+  requireIPv4PodCIDR: true
+k8sServiceHost: 10.0.0.168
+k8sServicePort: 6443
+kubeProxyReplacement: "true"
+l2announcements:
+  enabled: true
+l7Proxy: false
+operator:
+  prometheus:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      labels:
+        release: prometheus
+      trustCRDsExist: true
+  replicas: 2
+prometheus:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: prometheus
+    trustCRDsExist: true
+routingMode: native

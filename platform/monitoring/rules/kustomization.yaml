@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# 由 ArgoCD Application platform-monitoring-rules 管理。
+# 所有规则必须保留 label release=prometheus，Prometheus CR 的
+# ruleSelector 依赖该标签做集群范围发现。
+resources:
+  - app-monitoring-alerts.yaml
+  - bsm-coverage-alerts.yaml
+  - ceph-cluster-alerts.yaml
+  - cluster-wide-alerts.yaml
+  - coverage-gap-alerts.yaml
+  - tempo3-alerts.yaml
+
+# GitOps 白名单：Prometheus CR 的 ruleSelector 只接受带此标签的规则。
+# 只给 PrometheusRule 的 metadata.labels 打标签，不影响其他资源。
+patches:
+  - target:
+      kind: PrometheusRule
+    patch: |
+      - op: add
+        path: /metadata/labels/platform.gitops~1managed
+        value: "true"

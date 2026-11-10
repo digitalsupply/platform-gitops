@@ -1,0 +1,44 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-metallb
+  namespace: argocd
+  annotations:
+    # Network foundation: keep this before the Cilium L2 policy so the speaker
+    # is disabled before Cilium starts announcing the same VIP.
+    argocd.argoproj.io/sync-wave: "-5"
+spec:
+  project: default
+  source:
+    repoURL: http://192.168.67.201/digitalsupply/platform-gitops.git
+    targetRevision: main
+    path: platform/network/metallb
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: metallb-system
+  ignoreDifferences:
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+      jsonPointers:
+        - /spec/conversion/webhook/clientConfig/caBundle
+    - group: ""
+      kind: Service
+      jsonPointers:
+        - /spec/clusterIP
+        - /spec/clusterIPs
+  syncPolicy:
+    automated:
+      # Never prune MetalLB CRDs/controller by accident. Removing the speaker is
+      # done by the kustomize patch, not by pruning.
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - SkipDryRunOnMissingResource=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m

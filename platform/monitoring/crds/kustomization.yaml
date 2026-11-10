@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# prometheus-operator CRD bundle（与 kube-prometheus-stack chart 版本对齐）
+# 更新方式：
+#   helm show crds prometheus-community/kube-prometheus-stack --version <ver> \
+#     > /tmp/kps-crds.yaml
+#   然后按 CRD 名拆分覆盖本目录文件。
+resources:
+  - alertmanagerconfigs.monitoring.coreos.com.yaml
+  - alertmanagers.monitoring.coreos.com.yaml
+  - podmonitors.monitoring.coreos.com.yaml
+  - probes.monitoring.coreos.com.yaml
+  - prometheusagents.monitoring.coreos.com.yaml
+  - prometheuses.monitoring.coreos.com.yaml
+  - prometheusrules.monitoring.coreos.com.yaml
+  - scrapeconfigs.monitoring.coreos.com.yaml
+  - servicemonitors.monitoring.coreos.com.yaml
+  - thanosrulers.monitoring.coreos.com.yaml

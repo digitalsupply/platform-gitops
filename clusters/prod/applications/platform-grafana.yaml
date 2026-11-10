@@ -1,0 +1,43 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-grafana
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "10"
+spec:
+  project: default
+  source:
+    repoURL: http://192.168.67.201/digitalsupply/platform-gitops.git
+    targetRevision: main
+    path: platform/grafana/resources
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  ignoreDifferences:
+    - group: grafana.integreatly.org
+      kind: Grafana
+      jsonPointers:
+        - /status
+    - group: grafana.integreatly.org
+      kind: GrafanaDatasource
+      jsonPointers:
+        - /status
+    - group: grafana.integreatly.org
+      kind: GrafanaDashboard
+      jsonPointers:
+        - /status
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - SkipDryRunOnMissingResource=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m

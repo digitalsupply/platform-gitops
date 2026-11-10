@@ -1,0 +1,227 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    release: prometheus
+  name: cluster-wide-alerts
+  namespace: monitoring
+spec:
+  groups:
+  - name: pod.rules
+    rules:
+    - alert: PodCrashLooping
+      annotations:
+        description: 容器 {{ $labels.container }} 近 5 分钟重启 {{ $value }} 次（阈值 >2 次）。注：已修复 DaemonSet 滚动更新导致的误报——计数器序列断裂会产生伪陡增，原表达式
+          rate(...[15m])*60>0 阈值过低，任何抖动都会触发。
+        summary: 'Pod 频繁重启: {{ $labels.namespace }}/{{ $labels.pod }}'
+      expr: increase(kube_pod_container_status_restarts_total[5m]) > 2
+      for: 5m
+      labels:
+        severity: warning
+    - alert: PodNotReady
+      annotations:
+        summary: 'Pod 未就绪: {{ $labels.namespace }}/{{ $labels.pod }}'
+      expr: 'kube_pod_status_ready{condition="true"} == 0
+
+        and kube_pod_status_phase{phase=~"Running|Pending"} == 1
+
+        '
+      for: 5m
+      labels:
+        severity: warning
+    - alert: PodOOMKilled
+      annotations:
+        description: 容器 {{ $labels.namespace }}/{{ $labels.pod }}（{{ $labels.container }}）在最近 15 分钟内发生 OOMKill；若已恢复告警会在 15
+          分钟后自动消失。
+        summary: 'OOM Kill: {{ $labels.namespace }}/{{ $labels.pod }}'
+      expr: "(time() - max by (namespace, pod, container) (kube_pod_container_status_last_terminated_timestamp) < 900)\n \
+        \ and on (namespace, pod, container)\nkube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\"} == 1"
+      for: 1m
+      labels:
+        severity: critical
+    - alert: KubeVIPRestarting
+      annotations:
+        description: kube-vip 在过去 1 小时重启 {{ $value }} 次。kube-vip 失去 leader 租约会 panic 并退出(exit 2)，这是其内置行为。根因通常是本节点 kube-apiserver/etcd
+          出现短暂不可用。已启用 vip_preserve_on_leadership_loss=true，VIP 不会再被删除，因此不会连带影响 kubelet。排查方向：kubectl logs -n kube-system <pod>
+          --previous
+        summary: 'kube-vip 容器 1 小时内发生重启: {{ $labels.pod }} (节点 {{ $labels.node }})'
+      expr: sum by (pod, node) (increase(kube_pod_container_status_restarts_total{namespace="kube-system",container="kube-vip"}[1h]))
+        > 0
+      for: 10m
+      labels:
+        component: kube-vip
+        severity: warning
+    - alert: KubeVIPLeadershipChurn
+      annotations:
+        description: 'plndr-cp-lock 在过去 24h 内出现过 {{ $value }} 个不同的 holder，说明控制面 API 端点(kube-vip -> 127.0.0.1:6443 -> 本节点 apiserver/etcd)
+          不稳定，leader 反复丢失租约。关联告警: KubeVIPRestarting、KubeVIPLeaderNotRenewing。'
+        runbook: kubectl get lease -n kube-system plndr-cp-lock -o yaml; kubectl logs -n kube-system -l app.kubernetes.io/name=kube-vip-ds
+          --previous --tail=50
+        summary: kube-vip 控制面 VIP leader 在 24 小时内发生切换 ({{ $value }} 个不同 leader)
+      expr: count(count by (lease_holder) (max_over_time(kube_lease_owner{namespace="kube-system",lease="plndr-cp-lock"}[24h])))
+        > 1
+      for: 5m
+      labels:
+        component: kube-vip
+        severity: warning
+    - alert: KubeVIPLeaderNotRenewing
+      annotations:
+        description: 'Lease kube-system/plndr-cp-lock 的 renewTime 已停滞超过 90s。
+
+
+          【根因含义】当前 leader 所在节点无法访问 API Server。kube-vip 在 cp_enable + hostAliases 下实际连接本节点 127.0.0.1:6443，因此通常意味着该节点 kube-apiserver
+          / etcd 异常，或该节点的 kube-vip 容器已崩溃重启。
+
+
+          【重要】这不是『VIP 消失』型故障，不会再引发级联雪崩。2026-10-04 起已启用 vip_preserve_on_leadership_loss=true（丢失 leader 时保留 VIP、仅停止 ARP 广播），且所有节点
+          kubelet 已改为直连本机（m01=127.0.0.1:6443，master01=10.0.0.121，master02=10.0.0.120），全集群对 VIP 10.0.0.168:6443 的系统级消费者已归零，因此不会再出现
+          no route to host / 节点 NotReady。
+
+
+          【真实影响】控制面 API 端点至少 1/3 副本不可用；VIP 暂时保留在故障前的持有者上，直到新 leader 上任接管。
+
+
+          【阈值说明】阈值 90s 是刻意设置的：kube-state-metrics 每 30s 才刷新一次 kube_lease_renew_time，健康状态下 time()-renew_time 实测稳定在 30~32s（Prometheus
+          重启瞬态最高约 62s）。原阈值 30s 恰好等于指标固有陈旧度下限，实测有 82% 的时间处于超阈状态，导致长期误报。'
+        runbook: '# 1) 当前 leader 是谁、停滞多久、切换了多少次
+
+          kubectl get lease -n kube-system plndr-cp-lock -o jsonpath=''{.spec.holderIdentity}{"  renew="}{.spec.renewTime}{"  transitions="}{.spec.leaseTransitions}{"\n"}'';
+          date -u
+
+
+          # 2) 三个 kube-vip Pod 的重启次数（崩溃者 restartCount>0）
+
+          kubectl get pods -n kube-system -l app.kubernetes.io/name=kube-vip-ds -o wide
+
+          kubectl get pod -n kube-system <pod> -o jsonpath=''{.status.containerStatuses[0].lastState.terminated}''
+
+
+          # 3) leader 节点的崩溃现场日志
+
+          kubectl logs -n kube-system <leader 上的 kube-vip pod> -c kube-vip --previous --tail=50
+
+
+          # 4) leader 节点本机 apiserver / etcd 健康
+
+          curl -sk https://127.0.0.1:6443/healthz; echo
+
+          curl -sk ''https://127.0.0.1:6443/readyz?verbose'' | grep -E ''etcd|ping''
+
+          systemctl is-active kubelet containerd
+
+          journalctl -u kubelet --since ''-15min'' --no-pager | grep -iE ''no route|connection refused|6443|probe''
+
+
+          # 5) 确认 VIP 仍然可达（排障期间 API 不应中断）
+
+          curl -sk -o /dev/null -w ''VIP healthz HTTP %{http_code}\n'' https://10.0.0.168:6443/healthz
+
+
+          # 6) 若怀疑是告警本身误报：先确认 renewTime 是否真的在推进（10s 采两次对比）
+
+          kubectl get lease -n kube-system plndr-cp-lock -o jsonpath=''{.spec.renewTime}{"\n"}''; sleep 15
+
+          kubectl get lease -n kube-system plndr-cp-lock -o jsonpath=''{.spec.renewTime}{"\n"}''
+
+          kubectl exec -n monitoring deploy/prometheus-kube-state-metrics -- wget -qO- localhost:8080/metrics | grep ''kube_lease_renew_time.*plndr-cp-lock'''
+        summary: kube-vip 控制面 VIP leader 已超过 90s 未更新 renewTime (停滞 {{ $value | humanizeDuration }})
+      expr: time() - kube_lease_renew_time{namespace="kube-system",lease="plndr-cp-lock"} > 90
+      for: 1m
+      labels:
+        component: kube-vip
+        severity: critical
+  - name: node.rules
+    rules:
+    - alert: NodeHighCPU
+      annotations:
+        description: 使用率 {{ $value | humanizePercentage }}
+        summary: '节点 CPU 过高: {{ $labels.node }}'
+      expr: '1 - avg by(node) (rate(node_cpu_seconds_total{mode="idle"}[5m])) > 0.85
+
+        '
+      for: 5m
+      labels:
+        severity: warning
+    - alert: NodeHighMemory
+      annotations:
+        description: 使用率 {{ $value | humanizePercentage }}
+        summary: '节点内存过高: {{ $labels.instance }}'
+      expr: '1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.85
+
+        '
+      for: 5m
+      labels:
+        severity: warning
+    - alert: NodeDiskPressure
+      annotations:
+        description: 剩余 {{ $value | humanizePercentage }}
+        summary: '磁盘空间紧张: {{ $labels.instance }} {{ $labels.mountpoint }}'
+      expr: '(node_filesystem_avail_bytes{fstype!="tmpfs"} / node_filesystem_size_bytes) < 0.15
+
+        '
+      for: 5m
+      labels:
+        severity: critical
+  - name: otel-demo.rules
+    rules:
+    - alert: OtelDemoHighErrorRate
+      annotations:
+        description: 当前错误率 {{ $value | humanizePercentage }}
+        summary: otel-demo 错误率 > 5%
+      expr: "sum(rate(traces_spanmetrics_calls_total{\n  span_kind=\"SPAN_KIND_SERVER\",\n  status_code=\"STATUS_CODE_ERROR\"\
+        ,\n  namespace=\"otel-demo\"\n}[5m]))\n/\nsum(rate(traces_spanmetrics_calls_total{\n  span_kind=\"SPAN_KIND_SERVER\"\
+        ,\n  namespace=\"otel-demo\"\n}[5m])) > 0.05\n"
+      for: 2m
+      labels:
+        namespace: otel-demo
+        severity: warning
+    - alert: OtelDemoServiceDown
+      annotations:
+        summary: '服务下线: {{ $labels.job }}'
+      expr: up{namespace="otel-demo"} == 0
+      for: 1m
+      labels:
+        namespace: otel-demo
+        severity: critical
+  - name: workload-reliability.rules
+    rules:
+    - alert: KubePodHighRestartCount
+      annotations:
+        description: '{{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) 最近15分钟重启超过5次，疑似崩溃循环。注：2026-10-07
+          由6h/10改为15m/5，采用窗口化increase并缩短实例替换(计数器断链)导致的误报残留。'
+        summary: 'Pod 累计重启 {{ $value }} 次: {{ $labels.namespace }}/{{ $labels.pod }}'
+      expr: max by (namespace, pod, container) (increase(kube_pod_container_status_restarts_total[15m])) > 5
+      for: 10m
+      labels:
+        severity: warning
+    - alert: KubePodCriticalComponentHighRestart
+      annotations:
+        description: 控制面/核心组件 Pod 累计重启 > 20 次，稳定性风险高，需尽快排查
+        summary: '核心组件 Pod 累计重启严重: {{ $labels.namespace }}/{{ $labels.pod }}'
+      expr: max by (namespace, pod, container) (kube_pod_container_status_restarts_total{namespace=~"kube-system|argocd|logging|cert-manager"})
+        > 20
+      for: 1h
+      labels:
+        severity: critical
+    - alert: KubeContainerOOMKilled
+      annotations:
+        description: 容器因内存不足被 OOM killer 终止。注：cluster-wide-alerts 中已有的 PodOOMKilled 规则依赖 kube_pod_container_status_last_terminated_reason，该指标在当前集群为
+          0 序列（KSM 未采集 last_terminated_reason），本规则改用 cAdvisor 的 container_oom_events_total 作为可靠来源。
+        summary: '容器被 OOM 杀死: {{ $labels.namespace }}/{{ $labels.pod }}'
+      expr: increase(container_oom_events_total[1h]) > 0
+      for: 5m
+      labels:
+        severity: critical
+  - name: cache-config.rules
+    rules:
+    - alert: MemcachedLimitAboveContainerLimit
+      annotations:
+        description: '{{ $labels.namespace }}/{{ $labels.pod }} 的 memcached -m 上限 {{ $value | humanize1024 }}B 超过容器 limit，缓存填满即被
+          OOMKill；把 -m 调到 limit 的约 70%。'
+        summary: memcached 配置的缓存上限大于容器内存限制（必然 OOM）
+      expr: "memcached_limit_maxbytes_bytes\n  > on (namespace, pod) group_left (container)\n    kube_pod_container_resource_limits{resource=\"\
+        memory\", container=\"memcached\"}"
+      for: 10m
+      labels:
+        component: cache
+        severity: warning

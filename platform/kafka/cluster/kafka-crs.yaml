@@ -1,0 +1,58 @@
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  name: my-cluster
+  namespace: kafka
+spec:
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
+  kafka:
+    config:
+      default.replication.factor: 1
+      min.insync.replicas: 1
+      offsets.topic.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      transaction.state.log.replication.factor: 1
+    listeners:
+    - name: plaintext
+      port: 9092
+      tls: false
+      type: internal
+    - name: tls
+      port: 9093
+      tls: true
+      type: internal
+    version: 4.1.2
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaNodePool
+metadata:
+  labels:
+    strimzi.io/cluster: my-cluster
+  name: single-pool
+  namespace: kafka
+spec:
+  replicas: 1
+  roles:
+  - controller
+  - broker
+  storage:
+    class: ceph-rbd-sc
+    size: 20Gi
+    type: persistent-claim
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  labels:
+    strimzi.io/cluster: my-cluster
+  name: tempo-traces
+  namespace: kafka
+spec:
+  config:
+    cleanup.policy: delete
+    retention.ms: 604800000
+    segment.bytes: 1073741824
+  partitions: 12
+  replicas: 1

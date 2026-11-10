@@ -1,0 +1,155 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    release: prometheus
+  name: ceph-cluster-alerts
+  namespace: monitoring
+spec:
+  groups:
+  - name: ceph.health
+    rules:
+    - alert: CephClusterUnhealthy
+      annotations:
+        summary: Ceph 集群健康异常 (status={{ $value }})
+      expr: ceph_health_status{cluster="ceph-prod"} != 0
+      for: 2m
+      labels:
+        severity: critical
+    - alert: CephClusterHealthUnknown
+      annotations:
+        summary: Ceph 健康指标缺失，监控已失明
+      expr: absent(ceph_health_status{cluster="ceph-prod"})
+      for: 5m
+      labels:
+        severity: critical
+    - alert: CephMGRMetricsMissing
+      annotations:
+        summary: Ceph mgr prometheus 端点不可达。mgr prometheus 模块仅在 active mgr 运行，若 ceph-01 失联导致 ceph-02 升主，需把新 mgr IP 加入 ScrapeConfig
+          staticConfigs
+      expr: absent(ceph_mon_quorum_status{cluster="ceph-prod"})
+      for: 5m
+      labels:
+        severity: critical
+    - alert: CephMGRUnreachable
+      annotations:
+        summary: Ceph mgr metrics target 不可达
+      expr: up{job="ceph-mgr"} == 0
+      for: 3m
+      labels:
+        severity: critical
+  - name: ceph.mon
+    rules:
+    - alert: CephMonQuorumLost
+      annotations:
+        summary: Ceph monitor quorum 丢失，剩余 {{ $value }}/3
+      expr: sum(ceph_mon_quorum_status{cluster="ceph-prod"} == 1) < 2
+      for: 1m
+      labels:
+        severity: critical
+    - alert: CephMonNotInQuorum
+      annotations:
+        summary: Ceph monitor 未全部在 quorum 中
+      expr: sum(ceph_mon_quorum_status{cluster="ceph-prod"}) != 3
+      for: 5m
+      labels:
+        severity: warning
+  - name: ceph.osd
+    rules:
+    - alert: CephOSDDown
+      annotations:
+        summary: 有 {{ $value }} 个 Ceph OSD 处于 down
+      expr: count(ceph_osd_up{cluster="ceph-prod"} == 0) > 0
+      for: 2m
+      labels:
+        severity: critical
+    - alert: CephOSDOutOfCluster
+      annotations:
+        summary: 有 {{ $value }} 个 Ceph OSD 被标记 out
+      expr: count(ceph_osd_in{cluster="ceph-prod"} == 0) > 0
+      for: 5m
+      labels:
+        severity: critical
+    - alert: CephOSDHighCommitLatency
+      annotations:
+        summary: Ceph OSD 平均提交延迟 {{ $value }}ms 偏高
+      expr: avg(ceph_osd_commit_latency_ms{cluster="ceph-prod"}) > 50
+      for: 10m
+      labels:
+        severity: warning
+    - alert: CephTooFewOSDs
+      annotations:
+        summary: Ceph 集群在线 OSD 少于 3 个（{{ $value }}），失去冗余
+      expr: count(ceph_osd_up{cluster="ceph-prod"} == 1) < 3
+      for: 5m
+      labels:
+        severity: critical
+  - name: ceph.pg
+    rules:
+    - alert: CephPGIncomplete
+      annotations:
+        summary: 有 {{ $value }} 个 PG 处于 incomplete（数据不完整）
+      expr: count(ceph_pg_incomplete{cluster="ceph-prod"} == 1) > 0
+      for: 2m
+      labels:
+        severity: critical
+    - alert: CephPGDegraded
+      annotations:
+        summary: 有 {{ $value }} 个 PG 处于 degraded
+      expr: count(ceph_pg_degraded{cluster="ceph-prod"} == 1) > 0
+      for: 5m
+      labels:
+        severity: warning
+    - alert: CephPGStale
+      annotations:
+        summary: 有 {{ $value }} 个 PG 处于 stale
+      expr: count(ceph_pg_stale{cluster="ceph-prod"} == 1) > 0
+      for: 5m
+      labels:
+        severity: warning
+    - alert: CephPGScrubbingError
+      annotations:
+        summary: 有 {{ $value }} 个 PG scrub 报错
+      expr: count(ceph_pg_scrubbing{cluster="ceph-prod"} == 1) > 0
+      for: 30m
+      labels:
+        severity: warning
+  - name: ceph.capacity
+    rules:
+    - alert: CephPoolNearFull
+      annotations:
+        summary: Ceph 池 {{ $labels.pool_id }} 使用率 {{ $value }}%，超过 85%
+      expr: max by (pool_id) (ceph_pool_percent_used{cluster="ceph-prod"}) > 85
+      for: 15m
+      labels:
+        severity: warning
+    - alert: CephPoolCriticallyFull
+      annotations:
+        summary: Ceph 池 {{ $labels.pool_id }} 使用率 {{ $value }}%，有耗尽风险
+      expr: max by (pool_id) (ceph_pool_percent_used{cluster="ceph-prod"}) > 95
+      for: 5m
+      labels:
+        severity: critical
+    - alert: CephClusterNearFull
+      annotations:
+        summary: Ceph 集群总使用率超过 85%
+      expr: 1 - (ceph_cluster_total_used_bytes{cluster="ceph-prod"} / (ceph_cluster_total_used_bytes{cluster="ceph-prod"}
+        + ceph_cluster_total_bytes{cluster="ceph-prod"})) < 0.15
+      for: 15m
+      labels:
+        severity: warning
+    - alert: CephClusterCriticallyFull
+      annotations:
+        summary: Ceph 集群总使用率超过 95%，紧急
+      expr: 1 - (ceph_cluster_total_used_bytes{cluster="ceph-prod"} / (ceph_cluster_total_used_bytes{cluster="ceph-prod"}
+        + ceph_cluster_total_bytes{cluster="ceph-prod"})) < 0.05
+      for: 5m
+      labels:
+        severity: critical
+    - alert: CephPoolNoSpace
+      annotations:
+        summary: 有 Ceph 池可用空间为 0
+      expr: min(ceph_pool_max_avail{cluster="ceph-prod"}) == 0
+      for: 2m
+      labels:
+        severity: critical

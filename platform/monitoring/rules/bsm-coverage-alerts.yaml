@@ -1,0 +1,112 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    release: prometheus
+  name: bsm-coverage-alerts
+  namespace: monitoring
+spec:
+  groups:
+  - name: bsm.availability
+    rules:
+    - alert: CoreComponentNotReady
+      annotations:
+        description: 覆盖所有无 metrics 端点的组件；已排除非 Running 状态的 Pod（如已完成的 Job/一次性任务）
+        summary: '核心组件 Pod 未就绪: {{ $labels.namespace }}/{{ $labels.pod }}'
+      expr: sum by (namespace, pod) (kube_pod_status_ready{namespace=~"kube-system|argocd|logging|n8n|nfs-provisioner|kafka|knative-serving|knative-eventing|knative-operator|cert-manager|traefik|ceph-csi-rbd|tekton-pipelines|monitoring|opentelemetry",condition="true"})
+        * on(namespace,pod) group_left() (kube_pod_status_phase{phase="Running"} > 0) < 1
+      for: 10m
+      labels:
+        severity: warning
+    - alert: CNIComponentNotReady
+      annotations:
+        description: CNI 故障=该节点网络不可用，影响面最大
+        summary: 'Calico CNI 未就绪: {{ $labels.pod }}'
+      expr: sum by (pod) (kube_pod_status_ready{namespace="kube-system",pod=~"calico-node-.*",condition="true"}) < 1
+      for: 5m
+      labels:
+        severity: critical
+    - alert: CNIKubeControllersDown
+      annotations:
+        description: 网络策略下发与 IP 回收依赖此控制器
+        summary: calico-kube-controllers 未就绪
+      expr: sum(kube_pod_status_ready{namespace="kube-system",pod=~"calico-kube-controllers-.*",condition="true"}) < 1
+      for: 5m
+      labels:
+        severity: critical
+    - alert: MetalLBSpeakerNotReady
+      annotations:
+        description: speaker 负责 ARP/NDP 应答，异常=LoadBalancer 流量不通
+        summary: 'MetalLB speaker 未就绪: {{ $labels.pod }}'
+      expr: sum by (pod) (kube_pod_status_ready{namespace="metallb-system",pod=~"speaker-.*",condition="true"}) < 1
+      for: 5m
+      labels:
+        severity: critical
+    - alert: AlertReceiverDown
+      annotations:
+        description: n8n 是 AlertManager webhook 的实际接收端，挂了所有告警静默
+        summary: n8n 不可用（告警出口）
+      expr: sum(kube_pod_status_ready{namespace="n8n",pod=~"n8n-.*",condition="true"}) < 1
+      for: 5m
+      labels:
+        severity: critical
+    - alert: StorageProvisionerDown
+      annotations:
+        description: PVC 动态供给依赖它，故障=新 Pod 分配不到存储
+        summary: nfs-provisioner 不可用
+      expr: sum(kube_pod_status_ready{namespace="nfs-provisioner",condition="true"}) < 1
+      for: 5m
+      labels:
+        severity: critical
+    - alert: KubeVIPDown
+      annotations:
+        description: 控制面 VIP 漂移异常
+        summary: kube-vip-ds 不可用
+      expr: sum(kube_pod_status_ready{namespace="kube-system",pod=~"kube-vip-ds-.*",condition="true"}) < 1
+      for: 5m
+      labels:
+        severity: warning
+    - alert: GitOpsRedisDown
+      annotations:
+        description: ArgoCD 缓存与队列依赖 Redis
+        summary: ArgoCD Redis 不可用
+      expr: sum(kube_pod_status_ready{namespace="argocd",pod=~"argocd-redis-.*",condition="true"}) < 1
+      for: 5m
+      labels:
+        severity: warning
+    - alert: KafkaEntityOperatorDown
+      annotations:
+        description: 负责 Topic/User 的实际创建删除
+        summary: Kafka Entity Operator 不可用
+      expr: sum(kube_pod_status_ready{namespace="kafka",pod=~"my-cluster-entity-operator-.*",condition="true"}) < 1
+      for: 5m
+      labels:
+        severity: critical
+    - alert: TektonInterceptorsDown
+      annotations:
+        description: GitOps webhook 校验会失败
+        summary: Tekton 拦截器不可用
+      expr: sum(kube_pod_status_ready{namespace="tekton-pipelines",pod=~"tekton-triggers-core-interceptors-.*",condition="true"})
+        < 1
+      for: 10m
+      labels:
+        severity: warning
+    - alert: PodCrashLoopingFixed
+      annotations:
+        description: 直接读 K8s 上报的容器等待原因，不受计数器序列断裂影响（比 rate() 方案可靠）
+        summary: 'Pod 崩溃循环: {{ $labels.namespace }}/{{ $labels.pod }}'
+      expr: max by (namespace, pod, container) (kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"}) > 0
+      for: 15m
+      labels:
+        severity: warning
+  - name: bsm.coverage
+    rules:
+    - alert: DaemonSetNotFullyScheduled
+      annotations:
+        description: 节点级组件（日志采集/CNI）漏跑=该节点监控/网络能力缺失
+        summary: 'DaemonSet 未覆盖全部节点: {{ $labels.namespace }}/{{ $labels.daemonset }}'
+      expr: sum(kube_daemonset_status_desired_number_scheduled{namespace=~"kube-system|logging"}) - sum(kube_daemonset_status_number_ready{namespace=~"kube-system|logging"})
+        > 0
+      for: 15m
+      labels:
+        severity: warning

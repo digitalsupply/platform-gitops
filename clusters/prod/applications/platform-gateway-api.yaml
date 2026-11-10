@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  labels:
+    app.kubernetes.io/part-of: platform
+  name: platform-gateway-api
+  namespace: argocd
+spec:
+  destination:
+    namespace: default
+    server: https://kubernetes.default.svc
+  project: default
+  source:
+    # Gateway API CRD 由本仓库 vendored 管理，版本见各 CRD 的
+    # gateway.networking.k8s.io/bundle-version 注解（当前 v1.4.0）。
+    path: platform/gateway-api/crds
+    repoURL: http://192.168.67.201/digitalsupply/platform-gitops.git
+    targetRevision: main
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+      limit: 5
+    syncOptions:
+      - ServerSideApply=true

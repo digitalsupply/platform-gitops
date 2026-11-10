@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: alerting-adapter
+    app.kubernetes.io/name: wecom-adapter
+    app.kubernetes.io/part-of: cluster-alerting
+  name: wecom-adapter
+  namespace: monitoring
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: wecom-adapter
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: alerting-adapter
+        app.kubernetes.io/name: wecom-adapter
+        app.kubernetes.io/part-of: cluster-alerting
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - command:
+        - python3
+        - -u
+        - /app/adapter.py
+        env:
+        - name: LISTEN_ADDR
+          value: 0.0.0.0:8080
+        - name: WECOM_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              key: webhook-url
+              name: wecom-adapter
+        - name: WECOM_MIN_INTERVAL
+          value: '3'
+        - name: MAX_ALERTS
+          value: '10'
+        - name: PYTHONDONTWRITEBYTECODE
+          value: '1'
+        image: python:3.12-alpine@sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz
+            port: http
+            scheme: HTTP
+          periodSeconds: 20
+          successThreshold: 1
+          timeoutSeconds: 3
+        name: adapter
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz
+            port: http
+            scheme: HTTP
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 3
+        resources:
+          limits:
+            cpu: 200m
+            memory: 96Mi
+          requests:
+            cpu: 20m
+            memory: 32Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        startupProbe:
+          failureThreshold: 20
+          httpGet:
+            path: /healthz
+            port: http
+            scheme: HTTP
+          periodSeconds: 3
+          successThreshold: 1
+          timeoutSeconds: 1
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /app
+          name: script
+          readOnly: true
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 30
+      topologySpreadConstraints:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: wecom-adapter
+        maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+      volumes:
+      - configMap:
+          defaultMode: 292
+          name: wecom-adapter-script
+        name: script
